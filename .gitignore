@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+*.pyo
+
+# Django
+*.log
+*.pot
+*.pyc
+db.sqlite3
+media/
+staticfiles/
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Virtualenv
+venv/
+env/
+ENV/
+.venv/
+.idea/
+
+# Reports
+*.pdf
+*.csv
+*.xlsx
+
+# Twilio logs or files
+*.twl
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+coverage.xml
+*.cover
+.cache
+nosetests.xml
+pytest_cache/
+
+# Migrations (optional: keep if needed for deployment)
+**/migrations/*.pyc
+**/migrations/*.pyo
+**/migrations/__pycache__/
