@@ -19,7 +19,7 @@ def webhook(request):
 
     # Basic keyword handling
     if message_body in ['hi', 'hello']:
-        response = "👋 Hi there! Welcome to our WhatsApp bot.\nType `plan` to get your meal plan or `tip` for a nutrition tip."
+        response = "👋 Hi there! Welcome to our MamáMind.\nType `plan` to get your meal plan or `tip` for a nutrition tip."
     elif message_body == 'plan':
         sample_plan = {
             'days': [{'day': 'Monday'}, {'day': 'Tuesday'}, {'day': 'Wednesday'}]
