@@ -7,7 +7,7 @@ from django.conf import settings
 class SonarAPI:
     """Wrapper for the Perplexity Sonar API"""
     
-    BASE_URL = "https://api.perplexity.ai/sonar"
+    BASE_URL = "https://api.perplexity.ai/chat/completions"
     
     def __init__(self):
         self.api_key = settings.PERPLEXITY_API_KEY
