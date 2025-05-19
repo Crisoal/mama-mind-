@@ -19,26 +19,58 @@ class WhatsAppHandler:
             self.client = Client(self.account_sid, self.auth_token)
 
     def send_message(self, to_number, message_body):
+        """Send a text message via WhatsApp"""
         if not self.client:
             print(f"[Debug Mode] Would send to {to_number}: {message_body}")
             return {"status": "debug_mode"}
 
         try:
+            print(f"[send_message] Sending message to {to_number}: {message_body}")
             message = self.client.messages.create(
                 body=message_body,
                 from_=f"whatsapp:{self.phone_number}",
                 to=f"whatsapp:{to_number}"
             )
+            print(f"[send_message] Success. Message SID: {message.sid}")
             return {"status": "success", "sid": message.sid}
         except Exception as e:
+            print(f"[send_message] Error: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
+    def send_pdf(self, to_number, pdf_data, filename):
+        """Handle PDF sharing request (WhatsApp doesn't support direct PDFs)"""
+        if not self.client:
+            print(f"[Debug Mode] Would send PDF {filename} to {to_number}")
+            return {"status": "debug_mode"}
+
+        try:
+            # Twilio WhatsApp doesn't support direct PDF sending
+            # Send a message indicating PDF availability
+            message_body = (
+                f"Your meal plan PDF ({filename}) is ready! "
+                "PDF sharing via WhatsApp is coming soon. "
+                "Please contact support to receive it via email."
+            )
+            print(f"[send_pdf] Sending PDF availability message to {to_number}")
+            message = self.client.messages.create(
+                body=message_body,
+                from_=f"whatsapp:{self.phone_number}",
+                to=f"whatsapp:{to_number}"
+            )
+            print(f"[send_pdf] Success. Message SID: {message.sid}")
+            return {"status": "success", "sid": message.sid}
+        except Exception as e:
+            print(f"[send_pdf] Error: {str(e)}")
             return {"status": "error", "message": str(e)}
 
     def build_response(self, message_body):
+        """Build a TwiML response for incoming messages"""
         response = MessagingResponse()
         response.message(message_body)
         return str(response)
 
     def send_interactive_message(self, to_number, header_text, message_body, buttons=None):
+        """Send an interactive message with numbered options"""
         if not buttons:
             return self.send_message(to_number, message_body)
 
@@ -47,12 +79,14 @@ class WhatsAppHandler:
         return self.send_message(to_number, full_message)
 
     def send_meal_plan_summary(self, to_number, meal_plan):
+        """Send a summary of the weekly meal plan"""
         days = [day['day'] for day in meal_plan.get('days', [])]
         days_text = " | ".join(days)
-        message = f"Here's your Meal Plan 🍽️\n\nType a day to view details:\n{days_text}"
+        message = f"Here's your Meal Plan 🍽️\n\nType a day to view details:\n🗓️ {days_text}"
         return self.send_message(to_number, message)
 
     def send_meal_plan_day(self, to_number, day_data):
+        """Send details of a specific day's meal plan"""
         day = day_data.get('day', 'Today')
         meals = day_data.get('meals', {})
 
@@ -82,16 +116,23 @@ class WhatsAppHandler:
         return self.send_message(to_number, message)
 
     def send_daily_tip(self, to_number, tip):
-        title = tip.get('title', 'Daily Nutrition Tip')
+        """Send a daily nutrition tip"""
         content = tip.get('content', '')
         source = tip.get('source', '')
 
-        message = f"🌿 {title}\n\n{content}"
+        message = f"🌿 Tip of the Day: {content}"
         if source:
             message += f"\n\n👩‍⚕️ Source: {source}"
         return self.send_message(to_number, message)
 
+    def send_nudge(self, to_number, nudge):
+        """Send a behavioral nudge"""
+        content = nudge.get('content', '')
+        message = f"⏰ {content}"
+        return self.send_message(to_number, message)
+
     def parse_incoming_message(self, request):
+        """Parse incoming WhatsApp message"""
         if request.POST:
             try:
                 return {

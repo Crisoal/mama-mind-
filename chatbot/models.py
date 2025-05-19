@@ -10,9 +10,11 @@ class User(models.Model):
     # Onboarding info
     trimester = models.IntegerField(null=True, blank=True)
     dietary_preferences = models.ManyToManyField('DietaryPreference', blank=True)
+    other_dietary_preferences = models.TextField(blank=True)  # For "Other" dietary preferences
     allergies = models.TextField(blank=True)
     cultural_preferences = models.CharField(max_length=100, blank=True)
     pregnancy_conditions = models.ManyToManyField('PregnancyCondition', blank=True)
+    other_conditions = models.TextField(blank=True)  # For "Other" pregnancy conditions
     
     # User preferences
     wants_meal_plans = models.BooleanField(default=False)
@@ -36,9 +38,11 @@ class User(models.Model):
         """Reset all user preferences"""
         self.trimester = None
         self.dietary_preferences.clear()
+        self.other_dietary_preferences = ''
         self.allergies = ''
         self.cultural_preferences = ''
         self.pregnancy_conditions.clear()
+        self.other_conditions = ''
         self.wants_meal_plans = False
         self.wants_nutrition_tips = False
         self.wants_recipe_suggestions = False

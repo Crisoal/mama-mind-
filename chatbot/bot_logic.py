@@ -3,6 +3,11 @@ import json
 import random
 from datetime import datetime, timedelta
 from django.utils import timezone
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
+import io
+from io import BytesIO  # Added missing import
 
 from .models import User, DietaryPreference, PregnancyCondition, Conversation, MealPlan, NutritionTip
 from .utils.sonar import SonarAPI
@@ -10,8 +15,7 @@ from .whatsapp import WhatsAppHandler
 
 class BotLogic:
     """Core logic for the chatbot"""
-    
-    def __init__(self):
+    def __init__(self, initialize_db=True):
         self.sonar = SonarAPI()
         self.whatsapp = WhatsAppHandler()
         
@@ -21,9 +25,14 @@ class BotLogic:
         self.PREGNANCY_CONDITIONS = ["Anemia or low iron", "Gestational diabetes", "Hypertension", "Morning sickness", "None", "Other"]
         self.USAGE_PREFERENCES = ["Weekly meal plans", "Daily nutrition tips", "Recipe suggestions", "Nutrition Q&A", "All of the above"]
         
-        # Create necessary database objects
-        self._ensure_preferences_exist()
-    
+        # Create necessary database objects if requested
+        # This parameter allows us to skip DB operations during migrations
+        if initialize_db:
+            try:
+                self._ensure_preferences_exist()
+            except Exception as e:
+                print(f"Warning: Could not initialize preferences: {e}")
+
     def _ensure_preferences_exist(self):
         """Ensure all dietary preferences and pregnancy conditions exist in the database"""
         for pref in self.DIETARY_PREFERENCES:
@@ -31,15 +40,13 @@ class BotLogic:
         
         for condition in self.PREGNANCY_CONDITIONS:
             PregnancyCondition.objects.get_or_create(name=condition)
-    
+
     def process_message(self, from_number, message_body):
         """
         Process an incoming message and generate a response
-        
         Args:
             from_number (str): The sender's phone number
             message_body (str): The message body
-            
         Returns:
             str: The response message
         """
@@ -57,13 +64,14 @@ class BotLogic:
             return self._handle_onboarding_start(user)
         
         if message_body.lower() == "end":
+            user.conversation_state = "COMPLETED_ONBOARDING"
+            user.save()
             return "Thank you for using MamáMind! Your preferences have been saved. Type 'Start' anytime to chat again."
         
         if message_body.lower() == "start over":
-            user.reset_preferences()
-            user.conversation_state = "ONBOARDING_START"
+            user.conversation_state = "CONFIRM_RESET"
             user.save()
-            return self._handle_onboarding_start(user)
+            return "This will clear your profile. Confirm? (Yes/No)"
         
         if message_body.lower() == "update preferences":
             user.conversation_state = "ONBOARDING_START"
@@ -74,7 +82,10 @@ class BotLogic:
             return self._generate_meal_plan(user)
         
         # Handle user state
-        if user.conversation_state == "ONBOARDING_START":
+        if user.conversation_state == "CONFIRM_RESET":
+            return self._handle_reset_confirmation(user, message_body)
+        
+        elif user.conversation_state == "ONBOARDING_START":
             return self._handle_onboarding_start(user)
         
         elif user.conversation_state == "AWAITING_TRIMESTER":
@@ -98,10 +109,25 @@ class BotLogic:
         elif user.conversation_state == "AWAITING_MEAL_PLAN_DAY":
             return self._handle_meal_plan_day_selection(user, message_body)
         
+        elif user.conversation_state == "AWAITING_SHARE_CONFIRMATION":
+            return self._handle_share_confirmation(user, message_body)
+        
         # Default to Q&A mode if onboarding is complete
         else:
             return self._handle_nutrition_question(user, message_body)
-    
+
+    def _handle_reset_confirmation(self, user, message):
+        """Handle confirmation for resetting user profile"""
+        if message.lower() == "yes":
+            user.reset_preferences()
+            user.conversation_state = "ONBOARDING_START"
+            user.save()
+            return "Profile cleared. Let's start fresh! " + self._handle_onboarding_start(user)
+        else:
+            user.conversation_state = "COMPLETED_ONBOARDING"
+            user.save()
+            return "Okay, your profile remains unchanged. Type a question or 'Generate meal plan' to continue."
+
     def _handle_onboarding_start(self, user):
         """Handle the start of onboarding"""
         user.conversation_state = "AWAITING_TRIMESTER"
@@ -115,7 +141,7 @@ class BotLogic:
             "2. Second\n"
             "3. Third"
         )
-    
+
     def _handle_trimester_response(self, user, message):
         """Handle the trimester response"""
         try:
@@ -132,41 +158,52 @@ class BotLogic:
             
         except ValueError:
             return "Please enter a valid number for your trimester."
-    
+
     def _handle_dietary_preferences_response(self, user, message):
         """Handle the dietary preferences response"""
         try:
-            # Allow for multiple selections separated by commas
             selections = [int(x.strip()) for x in message.split(',')]
-            
-            # Validate selections
             if any(s < 1 or s > len(self.DIETARY_PREFERENCES) for s in selections):
                 return f"Please enter valid numbers between 1 and {len(self.DIETARY_PREFERENCES)}."
             
-            # Clear existing preferences
             user.dietary_preferences.clear()
-            
-            # Add new preferences
+            other_input = None
             for selection in selections:
                 pref_name = self.DIETARY_PREFERENCES[selection - 1]
-                pref = DietaryPreference.objects.get(name=pref_name)
-                user.dietary_preferences.add(pref)
+                if pref_name == "Other":
+                    other_input = "Please specify your other dietary preferences:"
+                    user.conversation_state = "AWAITING_OTHER_DIETARY"
+                else:
+                    pref = DietaryPreference.objects.get(name=pref_name)
+                    user.dietary_preferences.add(pref)
             
-            user.conversation_state = "AWAITING_ALLERGIES"
-            user.save()
-            
-            # Get the names of selected preferences for confirmation
-            selected_prefs = [self.DIETARY_PREFERENCES[s - 1] for s in selections]
-            
-            return (
-                f"Got it – {', '.join(selected_prefs)}!\n\n"
-                "Any food allergies or intolerances I should know about? "
-                "Please list them, or type NONE."
-            )
-            
+            if other_input:
+                user.save()
+                return other_input
+            else:
+                user.conversation_state = "AWAITING_ALLERGIES"
+                user.save()
+                selected_prefs = [self.DIETARY_PREFERENCES[s - 1] for s in selections]
+                return (
+                    f"Got it – {', '.join(selected_prefs)}!\n\n"
+                    "Any food allergies or intolerances I should know about? "
+                    "Please list them, or type NONE."
+                )
+                
         except ValueError:
             return "Please enter valid numbers for your dietary preferences."
-    
+
+    def _handle_other_dietary_response(self, user, message):
+        """Handle free-text input for 'Other' dietary preferences"""
+        user.other_dietary_preferences = message.strip()
+        user.conversation_state = "AWAITING_ALLERGIES"
+        user.save()
+        return (
+            f"Got it – {message.strip()} added to your preferences!\n\n"
+            "Any food allergies or intolerances I should know about? "
+            "Please list them, or type NONE."
+        )
+
     def _handle_allergies_response(self, user, message):
         """Handle the allergies response"""
         allergies = message.strip()
@@ -184,7 +221,7 @@ class BotLogic:
             "Which cuisine or cultural food traditions do you typically follow? "
             "This helps me suggest meals you'll enjoy."
         )
-    
+
     def _handle_cultural_preferences_response(self, user, message):
         """Handle the cultural preferences response"""
         cultural_pref = message.strip()
@@ -199,63 +236,70 @@ class BotLogic:
             "Have you been diagnosed with any pregnancy-related conditions? Select all that apply:\n\n"
             f"{options}"
         )
-    
+
     def _handle_pregnancy_conditions_response(self, user, message):
         """Handle the pregnancy conditions response"""
         try:
-            # Allow for multiple selections separated by commas
             selections = [int(x.strip()) for x in message.split(',')]
-            
-            # Validate selections
             if any(s < 1 or s > len(self.PREGNANCY_CONDITIONS) for s in selections):
                 return f"Please enter valid numbers between 1 and {len(self.PREGNANCY_CONDITIONS)}."
             
-            # Clear existing conditions
             user.pregnancy_conditions.clear()
-            
-            # Add new conditions
+            other_input = None
             for selection in selections:
                 cond_name = self.PREGNANCY_CONDITIONS[selection - 1]
-                if cond_name != "None":  # Skip 'None' option
+                if cond_name == "Other":
+                    other_input = "Please specify your other pregnancy conditions:"
+                    user.conversation_state = "AWAITING_OTHER_CONDITIONS"
+                elif cond_name != "None":
                     cond = PregnancyCondition.objects.get(name=cond_name)
                     user.pregnancy_conditions.add(cond)
             
-            user.conversation_state = "AWAITING_USAGE_PREFERENCES"
-            user.save()
-            
-            # Get the names of selected conditions for confirmation
-            selected_conds = [self.PREGNANCY_CONDITIONS[s - 1] for s in selections]
-            confirmation = f"I'll focus on options to support {', '.join(selected_conds)}." if "None" not in selected_conds else "No specific conditions noted."
-            
-            options = "\n".join([f"{i+1}. {pref}" for i, pref in enumerate(self.USAGE_PREFERENCES)])
-            
-            return (
-                f"Thanks – {confirmation}\n\n"
-                "How would you like to use MamáMind? Choose your preferences:\n\n"
-                f"{options}"
-            )
-            
+            if other_input:
+                user.save()
+                return other_input
+            else:
+                user.conversation_state = "AWAITING_USAGE_PREFERENCES"
+                user.save()
+                selected_conds = [self.PREGNANCY_CONDITIONS[s - 1] for s in selections if self.PREGNANCY_CONDITIONS[s - 1] != "None"]
+                confirmation = f"I'll focus on options to support {', '.join(selected_conds)}." if selected_conds else "No specific conditions noted."
+                
+                options = "\n".join([f"{i+1}. {pref}" for i, pref in enumerate(self.USAGE_PREFERENCES)])
+                
+                return (
+                    f"Thanks – {confirmation}\n\n"
+                    "How would you like to use MamáMind? Choose your preferences:\n\n"
+                    f"{options}"
+                )
+                
         except ValueError:
             return "Please enter valid numbers for your pregnancy conditions."
-    
+
+    def _handle_other_conditions_response(self, user, message):
+        """Handle free-text input for 'Other' pregnancy conditions"""
+        user.other_conditions = message.strip()
+        user.conversation_state = "AWAITING_USAGE_PREFERENCES"
+        user.save()
+        options = "\n".join([f"{i+1}. {pref}" for i, pref in enumerate(self.USAGE_PREFERENCES)])
+        return (
+            f"Thanks – I'll note {message.strip()}.\n\n"
+            "How would you like to use MamáMind? Choose your preferences:\n\n"
+            f"{options}"
+        )
+
     def _handle_usage_preferences_response(self, user, message):
         """Handle the usage preferences response"""
         try:
-            # Handle 'All of the above' option
             if message.strip() == "5":
                 user.wants_meal_plans = True
                 user.wants_nutrition_tips = True
                 user.wants_recipe_suggestions = True
                 user.wants_nutrition_qa = True
             else:
-                # Allow for multiple selections separated by commas
                 selections = [int(x.strip()) for x in message.split(',')]
-                
-                # Validate selections
                 if any(s < 1 or s > len(self.USAGE_PREFERENCES) for s in selections):
                     return f"Please enter valid numbers between 1 and {len(self.USAGE_PREFERENCES)}."
                 
-                # Set user preferences
                 user.wants_meal_plans = 1 in selections
                 user.wants_nutrition_tips = 2 in selections
                 user.wants_recipe_suggestions = 3 in selections
@@ -264,12 +308,11 @@ class BotLogic:
             user.conversation_state = "COMPLETED_ONBOARDING"
             user.save()
             
-            # Prepare the profile summary
             trimester_text = f"Trimester {user.trimester}"
-            diet_text = ", ".join(user.get_dietary_preferences_list())
+            diet_text = ", ".join(user.get_dietary_preferences_list()) + (f", {user.other_dietary_preferences}" if user.other_dietary_preferences else "")
             allergies_text = user.allergies if user.allergies else "No allergies"
             cuisine_text = user.cultural_preferences
-            conditions_text = ", ".join(user.get_pregnancy_conditions_list()) if user.get_pregnancy_conditions_list() else "No specific conditions"
+            conditions_text = ", ".join(user.get_pregnancy_conditions_list()) + (f", {user.other_conditions}" if user.other_conditions else "") if user.get_pregnancy_conditions_list() or user.other_conditions else "No specific conditions"
             
             profile_summary = (
                 f"✅ {trimester_text}\n"
@@ -279,7 +322,6 @@ class BotLogic:
                 f"✅ {conditions_text}"
             )
             
-            # If user wants meal plans, generate one now
             if user.wants_meal_plans:
                 return (
                     f"Perfect! Your profile is set up. Based on your information:\n\n"
@@ -292,13 +334,12 @@ class BotLogic:
                     f"{profile_summary}\n\n"
                     "You can ask me nutrition questions anytime. Just type your question!"
                 )
-            
+                
         except ValueError:
             return "Please enter valid numbers for your usage preferences."
-    
-    def _generate_meal_plan(self, user):
-        """Generate a meal plan for the user"""
-        # Calculate week number of pregnancy (approximate)
+
+    def _generate_meal_plan(self, user, is_scheduled=False):
+        """Generate a meal plan for the user, optionally for scheduled delivery"""
         if user.trimester == 1:
             week_number = random.randint(1, 12)
         elif user.trimester == 2:
@@ -306,51 +347,44 @@ class BotLogic:
         else:
             week_number = random.randint(27, 40)
         
-        # Check if we already have a meal plan for this week
         existing_plan = MealPlan.objects.filter(user=user, week_number=week_number).first()
         if existing_plan:
             meal_plan_data = existing_plan.meal_plan_data
         else:
-            # Prepare user profile for meal plan generation
             user_profile = {
                 'trimester': user.trimester,
-                'dietary_preferences': user.get_dietary_preferences_list(),
+                'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
                 'allergies': user.allergies,
                 'cultural_preferences': user.cultural_preferences,
-                'pregnancy_conditions': user.get_pregnancy_conditions_list(),
+                'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
             }
             
-            # Generate meal plan
             meal_plan_data = self.sonar.generate_meal_plan(user_profile)
             
-            # Save the meal plan
             MealPlan.objects.create(
                 user=user,
                 week_number=week_number,
                 meal_plan_data=meal_plan_data
             )
         
-        # Update user state
         user.conversation_state = "AWAITING_MEAL_PLAN_DAY"
         user.save()
         
-        # Return the meal plan summary
         days = [day.get('day', 'Day') for day in meal_plan_data.get('days', [])]
         days_text = " | ".join(days)
         
+        prefix = "Here's your scheduled " if is_scheduled else "Here's your "
         return (
-            f"Here's your Week {week_number} Meal Plan 🍽️ (type a day to view details):\n\n"
+            f"{prefix}Week {week_number} Meal Plan 🍽️ (type a day to view details):\n\n"
             f"🗓️ {days_text}"
         )
-    
+
     def _handle_meal_plan_day_selection(self, user, message):
         """Handle day selection for a meal plan"""
-        # Get the most recent meal plan
         meal_plan = MealPlan.objects.filter(user=user).order_by('-created_at').first()
         if not meal_plan:
             return "I don't have a meal plan generated for you yet. Type 'Generate meal plan' to create one."
         
-        # Find the day that matches the message
         day_name = message.strip().capitalize()
         meal_plan_data = meal_plan.meal_plan_data
         
@@ -361,12 +395,10 @@ class BotLogic:
                 break
         
         if not selected_day:
-            # If it's not a day name, return to Q&A mode
             user.conversation_state = "COMPLETED_ONBOARDING"
             user.save()
             return self._handle_nutrition_question(user, message)
         
-        # Format the day's meal plan
         day_name = selected_day.get('day', 'Today')
         meals = selected_day.get('meals', {})
         
@@ -391,66 +423,142 @@ class BotLogic:
                 
             message_parts.append(meal_text)
         
-        # Add a nutrition tip
-        tip = "Remember to stay hydrated throughout the day for optimal nutrient absorption."
-        message_parts.append(f"🧠 Tip: {tip}")
+        user_profile = {
+            'trimester': user.trimester,
+            'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
+            'allergies': user.allergies,
+            'cultural_preferences': user.cultural_preferences,
+            'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
+        }
+        tip = self.sonar.generate_meal_plan_tip(user_profile, selected_day)
+        message_parts.append(f"🧠 Tip: {tip.get('content', 'Stay hydrated for optimal nutrient absorption.')}")
         
-        return "\n\n".join(message_parts)
-    
+        user.conversation_state = "AWAITING_SHARE_CONFIRMATION"
+        user.save()
+        
+        return "\n\n".join(message_parts) + "\n\n📤 Want to share this plan with your partner or midwife? Reply 'Yes' or 'No'."
+
+    def _format_meal_plan_for_sharing(self, meal_plan, day_name=None):
+        """Format a meal plan or specific day for sharing"""
+        meal_plan_data = meal_plan.meal_plan_data
+        if day_name:
+            selected_day = next((day for day in meal_plan_data.get('days', []) if day.get('day', '').lower() == day_name.lower()), None)
+            if not selected_day:
+                return "Day not found."
+            
+            meals = selected_day.get('meals', {})
+            message_parts = [f"MamáMind Meal Plan - Week {meal_plan.week_number}, {selected_day.get('day', 'Today')}"]
+            for meal_type, details in meals.items():
+                name = details.get('name', 'Not specified')
+                description = details.get('description', '')
+                meal_text = f"{meal_type}: {name}"
+                if description:
+                    meal_text += f" ({description})"
+                message_parts.append(meal_text)
+            if 'tip' in selected_day:
+                message_parts.append(f"Tip: {selected_day['tip']}")
+            return "\n".join(message_parts)
+        else:
+            message_parts = [f"MamáMind Meal Plan - Week {meal_plan.week_number}"]
+            for day in meal_plan_data.get('days', []):
+                day_name = day.get('day', 'Day')
+                message_parts.append(f"\n{day_name}:")
+                for meal_type, details in day.get('meals', {}).items():
+                    name = details.get('name', 'Not specified')
+                    message_parts.append(f"  {meal_type}: {name}")
+            return "\n".join(message_parts)
+
+    def _generate_pdf_meal_plan(self, meal_plan, day_name=None):
+        """Generate a PDF version of the meal plan"""
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+        
+        meal_plan_text = self._format_meal_plan_for_sharing(meal_plan, day_name)
+        story.append(Paragraph(meal_plan_text.replace('\n', '<br/>'), styles['Normal']))
+        
+        doc.build(story)
+        pdf_data = buffer.getvalue()
+        buffer.close()
+        return pdf_data
+
+    def _handle_share_confirmation(self, user, message):
+        """Handle confirmation for sharing the meal plan"""
+        if message.lower() == "yes":
+            meal_plan = MealPlan.objects.filter(user=user).order_by('-created_at').first()
+            if not meal_plan:
+                return "No meal plan found to share."
+            
+            # Generate text summary for the latest day's plan
+            day_name = meal_plan.meal_plan_data.get('days', [])[-1].get('day')
+            text_summary = self._format_meal_plan_for_sharing(meal_plan, day_name=day_name)
+            
+            # Send text summary
+            self.whatsapp.send_message(user.phone_number, text_summary)
+            
+            # Generate PDF but inform user it's not directly sendable
+            pdf_data = self._generate_pdf_meal_plan(meal_plan, day_name=day_name)
+            pdf_message = (
+                f"Your meal plan PDF for {day_name} is ready! "
+                "PDF sharing via WhatsApp is coming soon. "
+                "Please contact support to receive it via email."
+            )
+            self.whatsapp.send_pdf(user.phone_number, pdf_data, f"meal_plan_week_{meal_plan.week_number}.pdf")
+            
+            user.conversation_state = "COMPLETED_ONBOARDING"
+            user.save()
+            return "Plan shared as text! Check the message above for PDF details."
+        else:
+            user.conversation_state = "COMPLETED_ONBOARDING"
+            user.save()
+            return "Okay, let's continue. Type a day or ask a question."
+
     def _handle_nutrition_question(self, user, message):
         """Handle nutrition questions"""
-        # Save the conversation
         conversation = Conversation(
             user=user,
             message=message,
-            response=""  # We'll update this later
+            response=""
         )
         
-        # Prepare user profile for the AI
         user_profile = {
             'trimester': user.trimester,
-            'dietary_preferences': user.get_dietary_preferences_list(),
+            'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
             'allergies': user.allergies,
             'cultural_preferences': user.cultural_preferences,
-            'pregnancy_conditions': user.get_pregnancy_conditions_list(),
+            'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
         }
         
-        # Get the answer from the AI
         response = self.sonar.get_nutrition_answer(message, user_profile)
         
-        # Update and save the conversation
         conversation.response = response
         conversation.save()
         
         return response
-    
+
     def send_daily_tip(self, user):
         """
         Send a daily nutrition tip to the user
-        
         Args:
             user (User): The user to send the tip to
-            
         Returns:
             dict: The response from the WhatsApp handler
         """
-        # Check if the user wants nutrition tips
+        # Should be triggered by a Celery task at 8:00 AM in user's time zone
         if not user.wants_nutrition_tips:
             return None
         
-        # Prepare user profile for the AI
         user_profile = {
             'trimester': user.trimester,
-            'dietary_preferences': user.get_dietary_preferences_list(),
+            'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
             'allergies': user.allergies,
             'cultural_preferences': user.cultural_preferences,
-            'pregnancy_conditions': user.get_pregnancy_conditions_list(),
+            'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
         }
         
-        # Generate a tip
         tip = self.sonar.generate_daily_tip(user_profile)
         
-        # Save the tip
         nutrition_tip = NutritionTip.objects.create(
             title=tip.get('title', 'Daily Nutrition Tip'),
             content=tip.get('content', ''),
@@ -458,5 +566,44 @@ class BotLogic:
             trimester=user.trimester
         )
         
-        # Send the tip via WhatsApp
-        return self.whatsapp.send_daily_tip(user.phone_number, tip)
+        message = f"🌿 Tip of the Day: {tip.get('content', '')}\n\n👩‍⚕️ Source: {tip.get('source', 'General recommendation')}"
+        return self.whatsapp.send_message(user.phone_number, message)
+
+    def send_nudge(self, user):
+        """
+        Send a behavioral nudge to the user
+        Args:
+            user (User): The user to send the nudge to
+        Returns:
+            dict: The response from the WhatsApp handler
+        """
+        # Should be triggered by a Celery task at 10:00 AM in user's time zone
+        if not user.wants_nutrition_tips:
+            return None
+        
+        user_profile = {
+            'trimester': user.trimester,
+            'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
+            'allergies': user.allergies,
+            'cultural_preferences': user.cultural_preferences,
+            'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
+        }
+        
+        nudge = self.sonar.generate_nudge(user_profile)
+        message = f"⏰ {nudge.get('content', 'Don’t forget your iron-rich meal today!')}"
+        return self.whatsapp.send_message(user.phone_number, message)
+
+    def send_scheduled_meal_plan(self, user):
+        """
+        Send a scheduled weekly meal plan to the user
+        Args:
+            user (User): The user to send the meal plan to
+        Returns:
+            dict: The response from the WhatsApp handler
+        """
+        # Should be triggered by a Celery task weekly (e.g., every Monday)
+        if not user.wants_meal_plans:
+            return None
+        
+        message = self._generate_meal_plan(user, is_scheduled=True)
+        return self.whatsapp.send_message(user.phone_number, message)

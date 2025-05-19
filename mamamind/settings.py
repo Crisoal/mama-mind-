@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from celery.schedules import crontab
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -104,3 +105,31 @@ PERPLEXITY_API_KEY = os.environ.get('PERPLEXITY_API_KEY', '')
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '')
+
+# Celery Configuration
+CELERY_BROKER_URL = 'redis://localhost:6379/0'  # Redis as message broker
+CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'  # Store task results
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'Africa/Lagos'  # WAT (UTC+1)
+CELERY_ENABLE_UTC = False  # Use local time zone (WAT)
+
+# Celery Beat Schedule
+CELERY_BEAT_SCHEDULE = {
+    'send-daily-tips': {
+        'task': 'chatbot.tasks.send_scheduled_tasks',
+        'schedule': crontab(hour=8, minute=0),  # 8:00 AM WAT daily
+    },
+    'send-daily-nudges': {
+        'task': 'chatbot.tasks.send_scheduled_tasks',
+        'schedule': crontab(hour=10, minute=0),  # 10:00 AM WAT daily
+    },
+    'send-weekly-meal-plans': {
+        'task': 'chatbot.tasks.send_scheduled_tasks',
+        'schedule': crontab(hour=8, minute=0, day_of_week='monday'),  # 8:00 AM WAT on Mondays
+    },
+}
+
+# Site URL for Celery tasks
+SITE_URL = 'http://localhost:8000'  # Update for production
