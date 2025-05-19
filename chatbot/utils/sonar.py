@@ -6,21 +6,22 @@ from django.conf import settings
 
 class SonarAPI:
     """Wrapper for the Perplexity Sonar API"""
-    
+
     BASE_URL = "https://api.perplexity.ai/chat/completions"
-    
+
     def __init__(self):
         self.api_key = settings.PERPLEXITY_API_KEY
         if not self.api_key:
             raise ValueError("Perplexity API key not found in environment variables")
-    
+
     def _get_headers(self):
         """Get headers for API requests"""
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "application/json"
         }
-    
+
     def query(self, prompt, model="sonar-reasoning-pro", context=None, stream=False, follow_up=False):
         """
         Make a query to the Sonar API
@@ -35,28 +36,39 @@ class SonarAPI:
         Returns:
             dict: The API response
         """
-        url = f"{self.BASE_URL}/query"
+        # Format messages in the expected structure
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        # Add system message with context if provided
+        if context:
+            messages.insert(0, {
+                "role": "system",
+                "content": json.dumps(context)
+            })
         
         payload = {
             "model": model,
-            "prompt": prompt,
-            "stream": stream,
+            "messages": messages,
+            "stream": stream
         }
         
-        if context:
-            payload["context"] = context
-        
-        if follow_up:
-            payload["follow_up"] = True
-        
         try:
-            response = requests.post(url, headers=self._get_headers(), json=payload)
+            response = requests.post(
+                self.BASE_URL, 
+                headers=self._get_headers(), 
+                json=payload
+            )
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
             print(f"Error making API request: {e}")
             return {"error": str(e)}
-    
+
     def generate_meal_plan(self, user_profile):
         """
         Generate a meal plan based on user profile
@@ -97,34 +109,39 @@ class SonarAPI:
         Format the response as a JSON structure that can be easily parsed.
         """
         
-        response = self.query(prompt, model="sonar-reasoning-pro")
+        # Add a system message to control format
+        context = {
+            "instructions": "Respond with a valid JSON structure containing a meal plan. Your response should be parseable JSON only."
+        }
+        
+        response = self.query(prompt, model="sonar-reasoning-pro", context=context)
         
         # Extract the meal plan from the response
         try:
-            # Try to parse the content directly as JSON
-            if 'content' in response:
-                content = response['content']
+            # Check if the response contains choices with content
+            if 'choices' in response and len(response['choices']) > 0:
+                content = response['choices'][0]['message']['content']
                 # Sometimes the API might return markdown code blocks with JSON
                 if '```json' in content:
                     json_str = content.split('```json')[1].split('```')[0].strip()
                     return json.loads(json_str)
                 # Or it might return raw JSON
-                return json.loads(content)
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    # If direct parsing fails, try to extract JSON using regex
+                    import re
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        return json.loads(json_match.group(0))
+                    else:
+                        # If all parsing fails, create a structured format ourselves
+                        return self._format_text_response_to_json(content)
             else:
                 return {"error": "Invalid response format from API"}
-        except json.JSONDecodeError:
-            # If direct parsing fails, try to extract JSON using regex or other methods
-            try:
-                import re
-                json_match = re.search(r'\{.*\}', response['content'], re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group(0))
-                else:
-                    # If all parsing fails, create a structured format ourselves
-                    return self._format_text_response_to_json(response['content'])
-            except Exception as e:
-                return {"error": f"Failed to parse meal plan: {str(e)}"}
-    
+        except Exception as e:
+            return {"error": f"Failed to parse meal plan: {str(e)}"}
+
     def _format_text_response_to_json(self, text):
         """
         Convert a text response to a structured JSON format
@@ -197,7 +214,7 @@ class SonarAPI:
             })
         
         return meal_plan
-    
+
     def get_nutrition_answer(self, question, user_profile):
         """
         Get an answer to a nutrition question based on user profile
@@ -229,11 +246,12 @@ class SonarAPI:
         """
         
         response = self.query(prompt, model="sonar-reasoning-pro")
-        if 'content' in response:
-            return response['content']
+        
+        if 'choices' in response and len(response['choices']) > 0:
+            return response['choices'][0]['message']['content']
         else:
             return "I'm sorry, I couldn't generate an answer at this time. Please try again later."
-    
+
     def generate_daily_tip(self, user_profile):
         """
         Generate a daily nutrition tip based on user profile
@@ -258,8 +276,8 @@ class SonarAPI:
         
         response = self.query(prompt, model="sonar-reasoning")
         
-        if 'content' in response:
-            content = response['content']
+        if 'choices' in response and len(response['choices']) > 0:
+            content = response['choices'][0]['message']['content']
             
             # Try to parse the tip into title, content and source
             lines = content.strip().split('\n')
