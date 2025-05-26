@@ -12,6 +12,10 @@ from io import BytesIO  # Added missing import
 from .models import User, DietaryPreference, PregnancyCondition, Conversation, MealPlan, NutritionTip
 from .utils.sonar import SonarAPI
 from .whatsapp import WhatsAppHandler
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class BotLogic:
     """Core logic for the chatbot"""
@@ -79,7 +83,10 @@ class BotLogic:
             return "Let's update your preferences. " + self._handle_onboarding_start(user)
         
         if message_body.lower() == "generate meal plan":
-            return self._generate_meal_plan(user)
+            logger.info(f"Generating meal plan for user {from_number}")
+            response = self._generate_meal_plan(user)
+            logger.info(f"Meal plan response: {response}")
+            return response
         
         # Handle user state
         if user.conversation_state == "CONFIRM_RESET":
@@ -338,46 +345,59 @@ class BotLogic:
         except ValueError:
             return "Please enter valid numbers for your usage preferences."
 
+    
     def _generate_meal_plan(self, user, is_scheduled=False):
-        """Generate a meal plan for the user, optionally for scheduled delivery"""
-        if user.trimester == 1:
-            week_number = random.randint(1, 12)
-        elif user.trimester == 2:
-            week_number = random.randint(13, 26)
-        else:
-            week_number = random.randint(27, 40)
-        
-        existing_plan = MealPlan.objects.filter(user=user, week_number=week_number).first()
-        if existing_plan:
-            meal_plan_data = existing_plan.meal_plan_data
-        else:
-            user_profile = {
-                'trimester': user.trimester,
-                'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
-                'allergies': user.allergies,
-                'cultural_preferences': user.cultural_preferences,
-                'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
-            }
+            """Generate a meal plan for the user, optionally for scheduled delivery"""
+            if user.trimester == 1:
+                week_number = random.randint(1, 12)
+            elif user.trimester == 2:
+                week_number = random.randint(13, 26)
+            else:
+                week_number = random.randint(27, 40)
             
-            meal_plan_data = self.sonar.generate_meal_plan(user_profile)
+            existing_plan = MealPlan.objects.filter(user=user, week_number=week_number).first()
+            if existing_plan:
+                meal_plan_data = existing_plan.meal_plan_data
+            else:
+                user_profile = {
+                    'trimester': user.trimester,
+                    'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
+                    'allergies': user.allergies,
+                    'cultural_preferences': user.cultural_preferences,
+                    'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
+                }
+                
+                meal_plan_data = self.sonar.generate_meal_plan(user_profile)
+                
+                MealPlan.objects.create(
+                    user=user,
+                    week_number=week_number,
+                    meal_plan_data=meal_plan_data
+                )
             
-            MealPlan.objects.create(
-                user=user,
-                week_number=week_number,
-                meal_plan_data=meal_plan_data
+            user.conversation_state = "AWAITING_MEAL_PLAN_DAY"
+            user.save()
+            
+            # Get current day and generate day names starting from today
+            today = datetime.now()
+            day_names = []
+            
+            # Get the meal plan days from the data structure
+            meal_plan_days = meal_plan_data.get('meal_plan', [])
+            
+            for i, day_data in enumerate(meal_plan_days):
+                current_date = today + timedelta(days=i)
+                day_name = current_date.strftime('%A')  # Full day name like 'Monday', 'Tuesday'
+                day_names.append(day_name)
+            
+            days_text = " | ".join(day_names)
+            
+            prefix = "Here's your scheduled " if is_scheduled else "Here's your "
+            return (
+                f"{prefix}Week {week_number} Meal Plan 🍽️ (type a day to view details):\n\n"
+                f"🗓️ {days_text}"
             )
-        
-        user.conversation_state = "AWAITING_MEAL_PLAN_DAY"
-        user.save()
-        
-        days = [day.get('day', 'Day') for day in meal_plan_data.get('days', [])]
-        days_text = " | ".join(days)
-        
-        prefix = "Here's your scheduled " if is_scheduled else "Here's your "
-        return (
-            f"{prefix}Week {week_number} Meal Plan 🍽️ (type a day to view details):\n\n"
-            f"🗓️ {days_text}"
-        )
+
 
     def _handle_meal_plan_day_selection(self, user, message):
         """Handle day selection for a meal plan"""
@@ -388,19 +408,47 @@ class BotLogic:
         day_name = message.strip().capitalize()
         meal_plan_data = meal_plan.meal_plan_data
         
-        selected_day = None
-        for day in meal_plan_data.get('days', []):
-            if day.get('day', '').lower() == day_name.lower():
-                selected_day = day
+        # Get today's date to map day names to meal plan indices
+        today = datetime.now()
+        selected_day_data = None
+        selected_day_index = None
+        
+        # Map the requested day name to the corresponding meal plan day
+        meal_plan_days = meal_plan_data.get('meal_plan', [])
+        
+        for i, day_data in enumerate(meal_plan_days):
+            current_date = today + timedelta(days=i)
+            current_day_name = current_date.strftime('%A')
+            
+            if current_day_name.lower() == day_name.lower():
+                selected_day_data = day_data
+                selected_day_index = i
                 break
         
-        if not selected_day:
+        if not selected_day_data:
             user.conversation_state = "COMPLETED_ONBOARDING"
             user.save()
             return self._handle_nutrition_question(user, message)
         
-        day_name = selected_day.get('day', 'Today')
-        meals = selected_day.get('meals', {})
+        # Get the actual day name for display
+        display_date = today + timedelta(days=selected_day_index)
+        display_day_name = display_date.strftime('%A')
+        
+        # Extract meals from the selected day data - check if 'meals' key exists
+        meals_data = selected_day_data.get('meals', selected_day_data)
+        meals = {}
+        
+        if 'breakfast' in meals_data:
+            meals['Breakfast'] = meals_data['breakfast']
+        if 'lunch' in meals_data:
+            meals['Lunch'] = meals_data['lunch']
+        if 'dinner' in meals_data:
+            meals['Dinner'] = meals_data['dinner']
+        
+        # Handle snacks
+        if 'snacks' in meals_data and meals_data['snacks']:
+            for i, snack in enumerate(meals_data['snacks'], 1):
+                meals[f'Snack {i}'] = snack
         
         meal_emojis = {
             "Breakfast": "🥣",
@@ -410,8 +458,9 @@ class BotLogic:
             "Dinner": "🍲"
         }
         
-        message_parts = [f"🗓️ {day_name}"]
+        message_parts = [f"🗓️ {display_day_name}"]
         
+        # Build meals section with truncation if needed
         for meal_type, details in meals.items():
             emoji = meal_emojis.get(meal_type, "🍽️")
             name = details.get('name', 'Not specified')
@@ -419,6 +468,9 @@ class BotLogic:
             
             meal_text = f"{emoji} {meal_type}: {name}"
             if description:
+                # Truncate description if too long
+                if len(description) > 80:
+                    description = description[:77] + "..."
                 meal_text += f"\n   {description}"
                 
             message_parts.append(meal_text)
@@ -430,14 +482,64 @@ class BotLogic:
             'cultural_preferences': user.cultural_preferences,
             'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
         }
-        tip = self.sonar.generate_meal_plan_tip(user_profile, selected_day)
-        message_parts.append(f"🧠 Tip: {tip.get('content', 'Stay hydrated for optimal nutrient absorption.')}")
+        
+        # Generate tip and clean it
+        tip_response = self.sonar.generate_meal_plan_tip(user_profile, selected_day_data)
+        tip_content = self._clean_tip_content(tip_response.get('content', 'Stay hydrated for optimal nutrient absorption.'))
+        
+        message_parts.append(f"🧠 Tip: {tip_content}")
         
         user.conversation_state = "AWAITING_SHARE_CONFIRMATION"
         user.save()
         
-        return "\n\n".join(message_parts) + "\n\n📤 Want to share this plan with your partner or midwife? Reply 'Yes' or 'No'."
+        # Join message and check length
+        base_message = "\n\n".join(message_parts)
+        footer = "\n\n📤 Want to share this plan with your partner or midwife? Reply 'Yes' or 'No'."
+        full_message = base_message + footer
+        
+        # If message is too long, truncate descriptions further
+        if len(full_message) > 1500:  # Leave buffer for WhatsApp
+            # Rebuild with shorter descriptions
+            message_parts = [f"🗓️ {display_day_name}"]
+            
+            for meal_type, details in meals.items():
+                emoji = meal_emojis.get(meal_type, "🍽️")
+                name = details.get('name', 'Not specified')
+                
+                # Just show meal name without description for brevity
+                meal_text = f"{emoji} {meal_type}: {name}"
+                message_parts.append(meal_text)
+            
+            message_parts.append(f"🧠 Tip: {tip_content}")
+            full_message = "\n\n".join(message_parts) + footer
+        
+        return full_message
 
+    def _clean_tip_content(self, tip_content):
+        """Clean tip content to remove any XML tags or debug info"""
+        import re
+        
+        # Remove any XML-like tags (including <think> tags)
+        tip_content = re.sub(r'<[^>]+>', '', tip_content)
+        
+        # Remove any leading/trailing whitespace
+        tip_content = tip_content.strip()
+        
+        # If tip is too long, truncate to reasonable length
+        if len(tip_content) > 150:
+            # Find the first sentence
+            sentences = tip_content.split('.')
+            if sentences and len(sentences[0]) < 150:
+                tip_content = sentences[0] + '.'
+            else:
+                tip_content = tip_content[:147] + "..."
+        
+        # If tip doesn't end with proper punctuation, add it
+        if tip_content and not tip_content.endswith(('.', '!', '?')):
+            tip_content += '.'
+        
+        return tip_content
+           
     def _format_meal_plan_for_sharing(self, meal_plan, day_name=None):
         """Format a meal plan or specific day for sharing"""
         meal_plan_data = meal_plan.meal_plan_data

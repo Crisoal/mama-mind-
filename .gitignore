@@ -40,6 +40,11 @@ ENV/
 # Twilio logs or files
 *.twl
 
+# celery
+celerybeat-schedule.bak
+celerybeat-schedule.dat
+celerybeat-schedule.dir
+
 # Coverage reports
 htmlcov/
 .tox/

@@ -252,6 +252,7 @@ class SonarAPI:
         else:
             return "I'm sorry, I couldn't generate an answer at this time. Please try again later."
 
+
     def generate_daily_tip(self, user_profile):
         """
         Generate a daily nutrition tip based on user profile
@@ -300,3 +301,97 @@ class SonarAPI:
                 "content": "Remember to stay hydrated and eat a variety of nutrient-rich foods.",
                 "source": "General pregnancy nutrition guidelines"
             }
+        
+    # Updated sonar.py tip generation method
+
+    def generate_meal_plan_tip(self, user_profile, day_data):
+        """
+        Generate a nutrition tip based on user profile and selected day's meal plan
+        
+        Args:
+            user_profile (dict): User preferences and health information
+            day_data (dict): Selected day's meal plan data
+        
+        Returns:
+            dict: A tip with content and source
+        """
+        trimester = user_profile.get('trimester', 1)
+        dietary_prefs = user_profile.get('dietary_preferences', [])
+        allergies = user_profile.get('allergies', '')
+        conditions = user_profile.get('pregnancy_conditions', [])
+        
+        # Extract key ingredients from the day's meals
+        # Handle both data structures: with and without 'meals' wrapper
+        meals_data = day_data.get('meals', day_data)
+        meals = []
+        
+        for meal_type in ['breakfast', 'lunch', 'dinner', 'snacks']:
+            if meal_type in meals_data:
+                if meal_type == 'snacks':
+                    meals.extend([snack.get('description', '') for snack in meals_data[meal_type]])
+                else:
+                    meals.append(meals_data[meal_type].get('description', ''))
+        
+        # Create a list of ingredients from meal descriptions
+        ingredients = ' '.join(meals).lower()
+        
+        # Define a comprehensive mapping of ingredients to nutrients and benefits
+        nutrient_map = {
+            'millet': {'nutrient': 'iron', 'benefit': 'essential for preventing anemia', 'source': 'ACOG guidelines'},
+            'spinach': {'nutrient': 'folate', 'benefit': 'supports fetal development', 'source': 'March of Dimes'},
+            'salmon': {'nutrient': 'omega-3 fatty acids', 'benefit': 'promotes brain development', 'source': 'APA'},
+            'mackerel': {'nutrient': 'omega-3 fatty acids', 'benefit': 'promotes brain development', 'source': 'APA'},
+            'tilapia': {'nutrient': 'protein', 'benefit': 'supports tissue growth', 'source': 'Mayo Clinic'},
+            'fish': {'nutrient': 'omega-3 fatty acids', 'benefit': 'promotes brain development', 'source': 'APA'},
+            'chicken': {'nutrient': 'protein', 'benefit': 'supports muscle development', 'source': 'ACOG'},
+            'turkey': {'nutrient': 'iron', 'benefit': 'prevents anemia', 'source': 'ACOG'},
+            'beef': {'nutrient': 'iron', 'benefit': 'prevents anemia', 'source': 'ACOG'},
+            'eggs': {'nutrient': 'choline', 'benefit': 'supports brain development', 'source': 'NIH'},
+            'avocado': {'nutrient': 'folate', 'benefit': 'prevents birth defects', 'source': 'CDC'},
+            'plantain': {'nutrient': 'potassium', 'benefit': 'regulates blood pressure', 'source': 'AHA'},
+            'sweet potato': {'nutrient': 'beta-carotene', 'benefit': 'supports vision development', 'source': 'NIH'},
+            'beans': {'nutrient': 'fiber', 'benefit': 'aids digestion', 'source': 'ACOG'},
+            'quinoa': {'nutrient': 'protein', 'benefit': 'provides complete amino acids', 'source': 'Harvard Health'},
+            'brown rice': {'nutrient': 'complex carbs', 'benefit': 'provides sustained energy', 'source': 'Mayo Clinic'},
+            'coconut': {'nutrient': 'healthy fats', 'benefit': 'supports nutrient absorption', 'source': 'NIH'},
+            'peanuts': {'nutrient': 'protein', 'benefit': 'supports growth', 'source': 'ACOG'},
+            'cashews': {'nutrient': 'magnesium', 'benefit': 'supports bone health', 'source': 'NIH'},
+            'water': {'nutrient': 'hydration', 'benefit': 'aids nutrient transport', 'source': 'ACOG'},
+        }
+        
+        # Find a matching ingredient for the tip
+        selected_nutrient = None
+        for ingredient, data in nutrient_map.items():
+            if ingredient in ingredients:
+                selected_nutrient = data
+                break
+        
+        # Default tip based on trimester and conditions
+        if not selected_nutrient:
+            if 'gestational diabetes' in conditions:
+                selected_nutrient = {
+                    'nutrient': 'fiber',
+                    'benefit': 'helps regulate blood sugar',
+                    'source': 'ADA'
+                }
+            elif trimester == 3:
+                selected_nutrient = {
+                    'nutrient': 'calcium',
+                    'benefit': 'supports final bone development',
+                    'source': 'ACOG'
+                }
+            else:
+                selected_nutrient = {
+                    'nutrient': 'iron',
+                    'benefit': 'prevents pregnancy anemia',
+                    'source': 'ACOG'
+                }
+        
+        # Create a simple, direct tip without using the AI model
+        # This avoids the XML debug content issue
+        tip_content = f"{selected_nutrient['nutrient'].capitalize()} {selected_nutrient['benefit']} - {selected_nutrient['source']}"
+        
+        return {
+            'content': tip_content,
+            'source': selected_nutrient['source']
+        }
