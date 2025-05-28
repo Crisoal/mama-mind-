@@ -422,8 +422,8 @@ class SonarAPI:
         CRITICAL REQUIREMENTS:
         - Maximum 120 words total
         - Use emojis for visual appeal (✅ ⚠️ 💡 🍽️ etc.)
-        - Include 1-2 practical tips
-        - Mention source if citing research
+        - Include 1-2 practical tips with source citations
+        - Add numbered citations [1][2] when referencing research
         - Be reassuring but medically accurate
         - Format: Brief answer + key points + tip
         - No thinking process or explanations about response length
@@ -450,6 +450,11 @@ class SonarAPI:
                 # Clean up extra whitespace
                 content = re.sub(r'\n\s*\n', '\n\n', content.strip())
                 
+                # Add citations if available
+                citations = response.get('citations', [])
+                if citations:
+                    content += self._format_citations(content, citations)
+                
                 # Truncate if still too long (keep under 1400 chars for safety margin)
                 if len(content) > 1400:
                     # Find last complete sentence within limit
@@ -473,6 +478,48 @@ class SonarAPI:
             logger.error(f"Error getting nutrition answer: {str(e)}")
             return "⚠️ I'm experiencing technical difficulties. Please try again later or consult your healthcare provider."
 
+    def _format_citations(self, content, citations):
+        """
+        Format citations for inclusion in the response
+        
+        Args:
+            content (str): The main response content
+            citations (list): List of citation URLs from Sonar API
+            
+        Returns:
+            str: Formatted citations to append to content
+        """
+        if not citations:
+            return ""
+        
+        # Check if content has citation markers like [1], [2], etc.
+        citation_markers = re.findall(r'\[(\d+)\]', content)
+        
+        if citation_markers:
+            # Format citations with markers
+            citation_text = "\n\n🔗 Sources:\n"
+            used_indices = set(int(marker) for marker in citation_markers)
+            
+            for i, url in enumerate(citations[:5]):  # Limit to 5 citations
+                if (i + 1) in used_indices:
+                    # Try to get domain name for readability
+                    domain = re.search(r'https?://(?:www\.)?([^/]+)', url)
+                    domain_name = domain.group(1) if domain else url
+                    citation_text += f"[{i+1}] {domain_name}\n"
+        else:
+            # No specific markers, just add general sources
+            citation_text = "\n\n🔗 Sources: "
+            domains = []
+            for url in citations[:3]:  # Limit to 3 for space
+                domain = re.search(r'https?://(?:www\.)?([^/]+)', url)
+                if domain:
+                    domain_name = domain.group(1)
+                    if domain_name not in domains:
+                        domains.append(domain_name)
+            
+            citation_text += ", ".join(domains)
+        
+        return citation_text
 
     def generate_daily_tip(self, user_profile):
         """
