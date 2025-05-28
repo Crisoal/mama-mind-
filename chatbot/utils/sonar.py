@@ -161,9 +161,9 @@ class SonarAPI:
             
             logger.info(f"Parsed profile - Trimester: {trimester}, Dietary: {dietary_prefs}, Cultural: {cultural_prefs}")
             
-            # Updated prompt to explicitly request JSON-only response
+            # Updated prompt to include recipe and citations
             prompt = f"""
-            Generate a detailed 7-day meal plan for a pregnant woman with the following profile:
+            Generate a detailed 7-day vegan meal plan for a pregnant woman with the following profile:
             - Trimester: {trimester}
             - Dietary Preferences: {', '.join(dietary_prefs)}
             - Allergies/Intolerances: {allergies}
@@ -177,17 +177,47 @@ class SonarAPI:
                 {{
                   "day": "Monday",
                   "meals": {{
-                    "Breakfast": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
-                    "Lunch": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
-                    "Snack 1": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
-                    "Snack 2": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
-                    "Dinner": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}}
+                    "Breakfast": {{
+                      "name": "dish name",
+                      "description": "description",
+                      "nutritional_benefits": "benefits",
+                      "recipe": "step-by-step recipe instructions",
+                      "citations": ["source1", "source2"]
+                    }},
+                    "Lunch": {{
+                      "name": "dish name",
+                      "description": "description",
+                      "nutritional_benefits": "benefits",
+                      "recipe": "step-by-step recipe instructions",
+                      "citations": ["source1", "source2"]
+                    }},
+                    "Snack 1": {{
+                      "name": "dish name",
+                      "description": "description",
+                      "nutritional_benefits": "benefits",
+                      "recipe": "step-by-step recipe instructions",
+                      "citations": ["source1", "source2"]
+                    }},
+                    "Snack 2": {{
+                      "name": "dish name",
+                      "description": "description",
+                      "nutritional_benefits": "benefits",
+                      "recipe": "step-by-step recipe instructions",
+                      "citations": ["source1", "source2"]
+                    }},
+                    "Dinner": {{
+                      "name": "dish name",
+                      "description": "description",
+                      "nutritional_benefits": "benefits",
+                      "recipe": "step-by-step recipe instructions",
+                      "citations": ["source1", "source2"]
+                    }}
                   }}
                 }}
               ]
             }}
             
-            Include all 7 days (Monday through Sunday) with proper nutritional benefits for pregnancy.
+            Include all 7 days (Monday through Sunday) with proper nutritional benefits, recipes, and citations for pregnancy. Recipes should be concise and practical. Citations should reference relevant sources used for each meal.
             """
             
             context = {
@@ -217,10 +247,8 @@ class SonarAPI:
                         
                         # Handle different JSON structures
                         if 'meal_plan' in meal_plan_data:
-                            # If the response has nested meal_plan structure, extract days
                             nested_data = meal_plan_data['meal_plan']
                             if isinstance(nested_data, dict):
-                                # Convert day_1, day_2, etc. format to days array
                                 days_array = []
                                 day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
                                 for i in range(1, 8):
@@ -270,7 +298,6 @@ class SonarAPI:
             except Exception as parse_error:
                 logger.error(f"Failed to parse meal plan: {str(parse_error)}")
                 logger.error(f"Parse error type: {type(parse_error)}")
-                import traceback
                 logger.error(f"Parse traceback: {traceback.format_exc()}")
                 return {"error": f"Failed to parse meal plan: {str(parse_error)}"}
                 
@@ -278,7 +305,6 @@ class SonarAPI:
             logger.error(f"=== SONAR MEAL PLAN GENERATION FAILED ===")
             logger.error(f"Sonar generation error: {str(e)}")
             logger.error(f"Error type: {type(e)}")
-            import traceback
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return {"error": f"Sonar generation failed: {str(e)}"}
 
