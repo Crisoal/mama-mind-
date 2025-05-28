@@ -164,12 +164,40 @@ class BotLogic:
             user.save()
             return "Okay, your profile remains unchanged. Type a question or 'Generate meal plan' to continue."
 
+    def get_daily_tip():
+        tips = [
+            "🌿 Daily Tip: Add greens like spinach to your meals – they're high in folate and support the baby’s brain development.",
+            "🍊 Daily Tip: Pair iron-rich foods with Vitamin C for better absorption. Try lentils with lemon or orange slices.",
+            "🥥 Daily Tip: Coconut water helps keep you hydrated and balances electrolytes during pregnancy.",
+            "🥬 Daily Tip: Ugu and spinach are packed with folate – essential for your baby’s brain and spine.",
+            "💤 Daily Tip: Aim for 7-9 hours of sleep. Proper rest supports healthy fetal growth.",
+        ]
+        index = datetime.datetime.now().day % len(tips)
+        return tips[index]
+
+    def get_daily_tip(self):
+        """Return a daily tip based on the day of the month"""
+        tips = [
+            "🌿 Daily Tip: Add greens like spinach to your meals – they're high in folate and support the baby’s brain development.",
+            "🍊 Daily Tip: Pair iron-rich foods with Vitamin C for better absorption. Try lentils with lemon or orange slices.",
+            "🥥 Daily Tip: Coconut water helps keep you hydrated and balances electrolytes during pregnancy.",
+            "🥬 Daily Tip: Ugu and spinach are packed with folate – essential for your baby’s brain and spine.",
+            "💤 Daily Tip: Aim for 7-9 hours of sleep. Proper rest supports healthy fetal growth.",
+        ]
+        import datetime
+        index = datetime.datetime.now().day % len(tips)
+        return tips[index]
+
+
     def _handle_onboarding_start(self, user):
-        """Handle the start of onboarding"""
+        """Handle the start of onboarding with daily tip"""
         user.conversation_state = "AWAITING_TRIMESTER"
         user.save()
-        
+
+        tip = self.get_daily_tip()
+
         return (
+            f"{tip}\n\n"
             "👋 Hi! I'm MamáMind, your AI-powered pregnancy nutrition coach. "
             "Let's create your personalized nutrition journey! 🍎🤰\n\n"
             "Which trimester are you in?\n"
@@ -177,6 +205,7 @@ class BotLogic:
             "2. Second\n"
             "3. Third"
         )
+
 
     def _handle_trimester_response(self, user, message):
         """Handle the trimester response"""
@@ -381,7 +410,6 @@ class BotLogic:
             f"{profile_summary}"
             f"{options_menu}"
         )
-
 
     def _generate_meal_plan(self, user, is_scheduled=False):
         """Generate a meal plan for the user, always creating a new one"""
