@@ -383,7 +383,6 @@ class BotLogic:
         )
 
 
-
     def _generate_meal_plan(self, user, is_scheduled=False):
         """Generate a meal plan for the user, always creating a new one"""
         logger.info(f"Generating meal plan for user {user.id}, trimester {user.trimester}")
@@ -853,12 +852,26 @@ class BotLogic:
             'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
         }
         
-        response = self.sonar.get_nutrition_answer(message, user_profile)
-        
-        conversation.response = response
-        conversation.save()
-        
-        return response
+        try:
+            response = self.sonar.get_nutrition_answer(message, user_profile)
+            
+            # Double-check character limit before saving/sending
+            if len(response) > 1600:
+                # Emergency truncation if somehow still too long
+                response = response[:1550] + "..."
+                
+            conversation.response = response
+            conversation.save()
+            
+            logger.info(f"Nutrition response length: {len(response)} characters")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error handling nutrition question: {str(e)}")
+            fallback_response = "⚠️ I'm having trouble right now. For pregnancy nutrition questions, please consult your healthcare provider."
+            conversation.response = fallback_response
+            conversation.save()
+            return fallback_response
 
     def send_daily_tip(self, user):
         """

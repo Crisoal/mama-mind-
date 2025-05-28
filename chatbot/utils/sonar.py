@@ -401,26 +401,77 @@ class SonarAPI:
         allergies = user_profile.get('allergies', '')
         conditions = user_profile.get('pregnancy_conditions', [])
         
+        # Create context string for user profile
+        profile_context = []
+        if trimester:
+            profile_context.append(f"Trimester {trimester}")
+        if dietary_prefs:
+            profile_context.append(f"Diet: {', '.join(dietary_prefs)}")
+        if allergies:
+            profile_context.append(f"Allergies: {allergies}")
+        if conditions:
+            profile_context.append(f"Conditions: {', '.join(conditions)}")
+        
+        profile_str = " | ".join(profile_context) if profile_context else "General pregnancy"
+        
         prompt = f"""
-        I need a pregnancy nutrition expert answer for a pregnant woman with the following profile:
-        - Trimester: {trimester}
-        - Dietary Preferences: {', '.join(dietary_prefs)}
-        - Allergies/Intolerances: {allergies}
-        - Pregnancy Conditions: {', '.join(conditions)}
+        Answer this pregnancy nutrition question for: {profile_str}
         
         Question: {question}
         
-        Please provide a concise, evidence-based answer that addresses her specific situation. 
-        Include a reputable medical source if available. Keep your answer under 150 words and 
-        make it both accurate and reassuring.
+        CRITICAL REQUIREMENTS:
+        - Maximum 120 words total
+        - Use emojis for visual appeal (✅ ⚠️ 💡 🍽️ etc.)
+        - Include 1-2 practical tips
+        - Mention source if citing research
+        - Be reassuring but medically accurate
+        - Format: Brief answer + key points + tip
+        - No thinking process or explanations about response length
+        
+        Example format:
+        "✅ [Food] is generally safe during pregnancy in moderation.
+        
+        ⚠️ Key considerations: [2-3 bullet points]
+        
+        💡 Tip: [Practical advice]
+        
+        📚 Consult your OB-GYN for personalized guidance."
         """
         
-        response = self.query(prompt, model="sonar-reasoning-pro")
-        
-        if 'choices' in response and len(response['choices']) > 0:
-            return response['choices'][0]['message']['content']
-        else:
-            return "I'm sorry, I couldn't generate an answer at this time. Please try again later."
+        try:
+            response = self.query(prompt, model="sonar-reasoning-pro")
+            
+            if 'choices' in response and len(response['choices']) > 0:
+                content = response['choices'][0]['message']['content']
+                
+                # Remove any thinking process wrapped in <think> tags
+                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
+                
+                # Clean up extra whitespace
+                content = re.sub(r'\n\s*\n', '\n\n', content.strip())
+                
+                # Truncate if still too long (keep under 1400 chars for safety margin)
+                if len(content) > 1400:
+                    # Find last complete sentence within limit
+                    truncated = content[:1350]
+                    last_period = truncated.rfind('.')
+                    last_question = truncated.rfind('?')
+                    last_exclamation = truncated.rfind('!')
+                    
+                    last_sentence_end = max(last_period, last_question, last_exclamation)
+                    
+                    if last_sentence_end > 1000:  # Ensure we have substantial content
+                        content = content[:last_sentence_end + 1]
+                    else:
+                        content = content[:1350] + "..."
+                
+                return content
+            else:
+                return "⚠️ I couldn't generate an answer right now. Please try asking again or consult your healthcare provider for guidance."
+                
+        except Exception as e:
+            logger.error(f"Error getting nutrition answer: {str(e)}")
+            return "⚠️ I'm experiencing technical difficulties. Please try again later or consult your healthcare provider."
 
 
     def generate_daily_tip(self, user_profile):
