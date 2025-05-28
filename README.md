@@ -216,13 +216,4 @@ MamáMind: Empowering Expectant Mothers with Nutrition, One Chat at a Time 🌟
 - **Future Enhancements**: Suggests improvements like completing tips, sharing, and adding multilingual support.
 - **Hackathon Context**: Ties the project to the Perplexity Sonar Hackathon, highlighting its relevance.
 
-### Notes
-- **Text Input**: The README clarifies that user input is text-based (e.g., typing "Vegetarian" instead of selecting buttons), aligning with your note that radio buttons were not used.
-- **Incomplete Features**: Daily tips/nudges and share plan limitations are explicitly mentioned to reflect the project’s current state.
-- **Cultural Relevance**: The meal plan example (e.g., Fonio Pancakes, Kenkey) suggests African cultural preferences, which is supported by the code’s flexibility in handling cultural inputs.
-- **Twilio Limit**: The code ensures messages stay within 1600 characters, as noted in the README.
-- **Assumptions**: The README assumes a Django/PostgreSQL setup and Twilio integration, as implied by the code. If your setup differs (e.g., different database), let me know to adjust the README.
-- **Contributor Info**: Placeholder for your name/email. Update with actual details before submission.
-
-This README is designed to impress hackathon judges by showcasing MamáMind’s potential, technical depth, and user-centric design while being transparent about limitations. If you need additional sections (e.g., screenshots, demo instructions) or tweaks, please let me know!
 
