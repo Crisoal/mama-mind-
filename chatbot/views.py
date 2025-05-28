@@ -1,11 +1,13 @@
 # chatbot/views.py
-from django.views.decorators.csrf import csrf_exempt
-from django.http import HttpResponse, JsonResponse
-from django.utils import timezone
 import logging
-from .bot_logic import BotLogic
-from .whatsapp import WhatsAppHandler
+from django.http import HttpResponse, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.utils import timezone
 from .models import User
+from .whatsapp import WhatsAppHandler
+from .bot_logic import BotLogic
+from threading import Thread
+import time
 
 # Enable logging
 logger = logging.getLogger(__name__)
@@ -31,6 +33,35 @@ def get_bot_logic():
             bot_logic = BotLogic(initialize_db=False)
     return bot_logic
 
+def process_message_async(from_number, message_body):
+    """Process message asynchronously to prevent Twilio timeout"""
+    try:
+        logger.info(f"Processing message asynchronously for {from_number}: {message_body}")
+        bot = get_bot_logic()
+        response = bot.process_message(from_number, message_body)
+        logger.info(f"Async BotLogic response: {response}")
+        
+        # If this was a meal plan generation, the response is already sent
+        # within the _generate_meal_plan method, so we don't need to send again
+        
+    except Exception as e:
+        logger.error(f"Error in async processing: {str(e)}")
+        # Send error message to user
+        try:
+            error_response = "Sorry, something went wrong. Please try again later."
+            whatsapp_handler.send_message(from_number, error_response)
+        except Exception as send_error:
+            logger.error(f"Failed to send error message: {str(send_error)}")
+
+def is_meal_plan_request(message_body):
+    """Check if the message is requesting a meal plan"""
+    meal_plan_keywords = [
+        'meal plan', 'mealplan', 'weekly plan', 'food plan', 
+        'nutrition plan', 'eating plan', 'menu', 'meals'
+    ]
+    message_lower = message_body.lower().strip()
+    return any(keyword in message_lower for keyword in meal_plan_keywords)
+
 @csrf_exempt
 def webhook(request):
     logger.info("Incoming WhatsApp webhook hit.")
@@ -43,7 +74,21 @@ def webhook(request):
     message_body = parsed_message['body']
     logger.info(f"Parsed message from {from_number}: {message_body}")
 
-    # Process the message using BotLogic - get instance using helper function
+    # Check if this is a meal plan request that might take time
+    if is_meal_plan_request(message_body):
+        logger.info("Detected meal plan request - processing asynchronously")
+        
+        # Start async processing
+        thread = Thread(target=process_message_async, args=(from_number, message_body))
+        thread.daemon = True
+        thread.start()
+        
+        # Return immediate response to Twilio to prevent timeout
+        twiml = whatsapp_handler.build_response("")  # Empty response to Twilio
+        logger.info("Sent immediate empty TwiML response for async processing.")
+        return HttpResponse(twiml, content_type='application/xml')
+    
+    # For non-meal plan requests, process synchronously
     try:
         bot = get_bot_logic()
         response = bot.process_message(from_number, message_body)

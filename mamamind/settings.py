@@ -1,10 +1,18 @@
 import os
+import sys
+import io
 from pathlib import Path
 from celery.schedules import crontab
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Force UTF-8 encoding for stdout/stderr
+if sys.platform.startswith('win'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -14,6 +22,7 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-default-key-ch
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+DEBUG_WHATSAPP = True
 
 ALLOWED_HOSTS = ['*']  # Modify this for production
 
@@ -133,3 +142,39 @@ CELERY_BEAT_SCHEDULE = {
 
 # Site URL for Celery tasks
 SITE_URL = 'http://localhost:8000'  # Update for production
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': 'meal_plan_debug.log',
+            'encoding': 'utf-8',  # Explicitly set UTF-8 encoding
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'DEBUG',
+    },
+    'loggers': {
+        'chatbot.utils.sonar': {
+            'handlers': ['file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+    },
+}

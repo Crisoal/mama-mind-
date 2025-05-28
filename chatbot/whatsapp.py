@@ -1,8 +1,12 @@
 # chatbot/whatsapp.py
 import json
+import logging
 from django.conf import settings
 from twilio.rest import Client
 from twilio.twiml.messaging_response import MessagingResponse
+
+# Enable logging
+logger = logging.getLogger(__name__)
 
 class WhatsAppHandler:
     """Handler for WhatsApp messaging using Twilio"""
@@ -13,29 +17,57 @@ class WhatsAppHandler:
         self.phone_number = settings.TWILIO_PHONE_NUMBER
 
         if not all([self.account_sid, self.auth_token, self.phone_number]):
-            print("Warning: Twilio credentials not fully configured")
+            logger.warning("Warning: Twilio credentials not fully configured")
             self.client = None
         else:
             self.client = Client(self.account_sid, self.auth_token)
+            
+        # Log configuration for debugging
+        logger.info(f"WhatsApp Handler initialized - From number: {self.phone_number}")
 
     def send_message(self, to_number, message_body):
         """Send a text message via WhatsApp"""
         if not self.client:
-            print(f"[Debug Mode] Would send to {to_number}: {message_body}")
+            logger.info(f"[Debug Mode] Would send to {to_number}: {message_body}")
             return {"status": "debug_mode"}
 
+        # Clean and validate phone numbers
+        clean_to_number = to_number.replace('whatsapp:', '').strip()
+        clean_from_number = self.phone_number.replace('whatsapp:', '').strip()
+        
+        # Log the numbers for debugging
+        logger.info(f"[send_message] Attempting to send from {clean_from_number} to {clean_to_number}")
+        
+        # Check if From and To are the same (this causes Twilio error 63031)
+        if clean_to_number == clean_from_number:
+            logger.error(f"CONFIGURATION ERROR: Twilio From number ({clean_from_number}) is the same as recipient ({clean_to_number})")
+            logger.error("Check your TWILIO_PHONE_NUMBER setting - it should be your Twilio WhatsApp sandbox number, not the user's number")
+            return {"status": "error", "message": "Invalid Twilio configuration - From and To numbers are identical"}
+        
+        # Validate phone number format
+        if not clean_to_number.startswith('+'):
+            logger.warning(f"Phone number may be missing country code: {clean_to_number}")
+        
+        # Additional validation for Twilio WhatsApp sandbox
+        if not clean_from_number.startswith('+'):
+            logger.error(f"Twilio phone number missing country code: {clean_from_number}")
+            return {"status": "error", "message": "Invalid Twilio phone number format"}
+        
         try:
-            print(f"[send_message] Sending message to {to_number}: {message_body}")
+            logger.info(f"[send_message] Sending message to {clean_to_number}: {message_body[:100]}...")
+            
             message = self.client.messages.create(
                 body=message_body,
-                from_=f"whatsapp:{self.phone_number}",
-                to=f"whatsapp:{to_number}"
+                from_=f"whatsapp:{clean_from_number}",
+                to=f"whatsapp:{clean_to_number}"
             )
-            print(f"[send_message] Success. Message SID: {message.sid}")
+            logger.info(f"[send_message] Success. Message SID: {message.sid}")
             return {"status": "success", "sid": message.sid}
         except Exception as e:
-            print(f"[send_message] Error: {str(e)}")
+            logger.error(f"[send_message] Twilio API Error: {str(e)}")
+            logger.error(f"[send_message] From: whatsapp:{clean_from_number}, To: whatsapp:{clean_to_number}")
             return {"status": "error", "message": str(e)}
+
 
     def send_pdf(self, to_number, pdf_data, filename):
         """Handle PDF sharing request (WhatsApp doesn't support direct PDFs)"""
@@ -62,13 +94,7 @@ class WhatsAppHandler:
         except Exception as e:
             print(f"[send_pdf] Error: {str(e)}")
             return {"status": "error", "message": str(e)}
-
-    def build_response(self, message_body):
-        """Build a TwiML response for incoming messages"""
-        response = MessagingResponse()
-        response.message(message_body)
-        return str(response)
-
+        
     def send_interactive_message(self, to_number, header_text, message_body, buttons=None):
         """Send an interactive message with numbered options"""
         if not buttons:
@@ -143,10 +169,11 @@ class WhatsAppHandler:
                     'num_media': int(request.POST.get('NumMedia', 0))
                 }
             except Exception as e:
-                print(f"Error parsing Twilio webhook: {e}")
+                logger.error(f"Error parsing Twilio webhook: {e}")
                 return None
         else:
             try:
+                import json
                 data = json.loads(request.body)
                 return {
                     'from_number': data.get('from', ''),
@@ -156,5 +183,18 @@ class WhatsAppHandler:
                     'num_media': 0
                 }
             except Exception as e:
-                print(f"Error parsing direct API request: {e}")
+                logger.error(f"Error parsing direct API request: {e}")
                 return None
+
+    def build_response(self, message_text):
+        """Build TwiML response for Twilio"""
+        try:
+            response = MessagingResponse()
+            if message_text:  # Only add message if there's content
+                response.message(message_text)
+            return str(response)
+        except Exception as e:
+            logger.error(f"Error building TwiML response: {str(e)}")
+            # Return empty response on error
+            response = MessagingResponse()
+            return str(response)

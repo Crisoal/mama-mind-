@@ -1,6 +1,11 @@
 # chatbot/bot_logic.py
 import json
 import random
+import os
+import sys
+import time
+from django.db import IntegrityError
+from twilio.twiml.messaging_response import MessagingResponse
 from datetime import datetime, timedelta
 from django.utils import timezone
 from reportlab.lib.pagesizes import letter
@@ -14,8 +19,15 @@ from .utils.sonar import SonarAPI
 from .whatsapp import WhatsAppHandler
 import logging
 
+# Set up logging
 logger = logging.getLogger(__name__)
 
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    encoding='utf-8'  # Add this
+)
 
 class BotLogic:
     """Core logic for the chatbot"""
@@ -77,16 +89,18 @@ class BotLogic:
             user.save()
             return "This will clear your profile. Confirm? (Yes/No)"
         
-        if message_body.lower() == "update preferences":
+        if message_body.lower() in ["settings", "update preferences"]:
             user.conversation_state = "ONBOARDING_START"
             user.save()
             return "Let's update your preferences. " + self._handle_onboarding_start(user)
         
-        if message_body.lower() == "generate meal plan":
-            logger.info(f"Generating meal plan for user {from_number}")
-            response = self._generate_meal_plan(user)
-            logger.info(f"Meal plan response: {response}")
-            return response
+            # Add menu handling
+        if message_body.lower() in ["menu", "help", "options"]:
+            return self._show_menu(user)
+        
+        if message_body.lower() in ["meal plan", "generate meal plan"]:
+            return self._generate_meal_plan(user)
+        
         
         # Handle user state
         if user.conversation_state == "CONFIRM_RESET":
@@ -122,6 +136,21 @@ class BotLogic:
         # Default to Q&A mode if onboarding is complete
         else:
             return self._handle_nutrition_question(user, message_body)
+
+    def _show_menu(self, user):
+        """Show available commands to user"""
+        if user.conversation_state in ["COMPLETED_ONBOARDING", None]:
+            return (
+                "🌟 **MamáMind Menu**\n\n"
+                "🍽️ **meal plan** - Get personalized weekly meals\n"
+                "❓ **Ask questions** - Pregnancy nutrition Q&A\n"
+                "💡 **daily tip** - Get today's nutrition tip\n"
+                "⚙️ **settings** - Update your preferences\n"
+                "📤 **share** - Share your meal plan\n\n"
+                "💬 *Just type any option or ask me anything!*"
+            )
+        else:
+            return "Let me help you complete your profile first! 😊"
 
     def _handle_reset_confirmation(self, user, message):
         """Handle confirmation for resetting user profile"""
@@ -315,39 +344,63 @@ class BotLogic:
             user.conversation_state = "COMPLETED_ONBOARDING"
             user.save()
             
-            trimester_text = f"Trimester {user.trimester}"
-            diet_text = ", ".join(user.get_dietary_preferences_list()) + (f", {user.other_dietary_preferences}" if user.other_dietary_preferences else "")
-            allergies_text = user.allergies if user.allergies else "No allergies"
-            cuisine_text = user.cultural_preferences
-            conditions_text = ", ".join(user.get_pregnancy_conditions_list()) + (f", {user.other_conditions}" if user.other_conditions else "") if user.get_pregnancy_conditions_list() or user.other_conditions else "No specific conditions"
-            
-            profile_summary = (
-                f"✅ {trimester_text}\n"
-                f"✅ {diet_text}\n"
-                f"✅ {allergies_text}\n"
-                f"✅ {cuisine_text} cuisine preference\n"
-                f"✅ {conditions_text}"
-            )
-            
-            if user.wants_meal_plans:
-                return (
-                    f"Perfect! Your profile is set up. Based on your information:\n\n"
-                    f"{profile_summary}\n\n"
-                    "Let me generate your first meal plan. Type 'Generate meal plan' anytime to get a new one."
-                )
-            else:
-                return (
-                    f"Perfect! Your profile is set up. Based on your information:\n\n"
-                    f"{profile_summary}\n\n"
-                    "You can ask me nutrition questions anytime. Just type your question!"
-                )
+            # Use the new completion message method
+            return self._get_onboarding_completion_message(user)
                 
         except ValueError:
             return "Please enter valid numbers for your usage preferences."
 
-    
+    def _get_onboarding_completion_message(self, user):
+        """Generate completion message with available options"""
+        trimester_text = f"Trimester {user.trimester}"
+        diet_text = ", ".join(user.get_dietary_preferences_list()) + (f", {user.other_dietary_preferences}" if user.other_dietary_preferences else "")
+        allergies_text = user.allergies if user.allergies else "No allergies"
+        cuisine_text = user.cultural_preferences
+        conditions_text = ", ".join(user.get_pregnancy_conditions_list()) + (f", {user.other_conditions}" if user.other_conditions else "") if user.get_pregnancy_conditions_list() or user.other_conditions else "No specific conditions"
+        
+        profile_summary = (
+            f"✅ {trimester_text}\n"
+            f"✅ {diet_text}\n"
+            f"✅ {allergies_text}\n"
+            f"✅ {cuisine_text} cuisine preference\n"
+            f"✅ {conditions_text}"
+        )
+        
+        options_menu = (
+            "\n\n✨ **What would you like to do?**\n"
+            "🍽️ **meal plan** - Get personalized weekly meals\n"
+            "❓ **Ask questions** - Pregnancy nutrition Q&A\n"
+            "💡 **daily tip** - Get today's nutrition tip\n"
+            "📋 **menu** - See all options anytime\n"
+            "⚙️ **settings** - Update preferences\n\n"
+            "💬 *Just type any option or ask me anything!*"
+        )
+        
+        return (
+            f"🎉 Perfect! Your profile is set up. Based on your information:\n\n"
+            f"{profile_summary}"
+            f"{options_menu}"
+        )
+
+
+
     def _generate_meal_plan(self, user, is_scheduled=False):
-            """Generate a meal plan for the user, optionally for scheduled delivery"""
+        """Generate a meal plan for the user, always creating a new one"""
+        logger.info(f"Generating meal plan for user {user.id}, trimester {user.trimester}")
+        
+        try:
+            # Send immediate progress indicator to user (non-scheduled only)
+            if not is_scheduled:
+                progress_message = "🍽️ Generating your personalized meal plan... This may take a few moments."
+                try:
+                    from .whatsapp import WhatsAppHandler
+                    whatsapp_handler = WhatsAppHandler()
+                    whatsapp_handler.send_message(user.phone_number, progress_message)
+                    logger.info(f"Sent progress indicator to user {user.id}")
+                except Exception as progress_error:
+                    logger.warning(f"Failed to send progress indicator: {str(progress_error)}")
+            
+            # Always generate a random week number for variety
             if user.trimester == 1:
                 week_number = random.randint(1, 12)
             elif user.trimester == 2:
@@ -355,49 +408,164 @@ class BotLogic:
             else:
                 week_number = random.randint(27, 40)
             
-            existing_plan = MealPlan.objects.filter(user=user, week_number=week_number).first()
-            if existing_plan:
-                meal_plan_data = existing_plan.meal_plan_data
-            else:
-                user_profile = {
-                    'trimester': user.trimester,
-                    'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
-                    'allergies': user.allergies,
-                    'cultural_preferences': user.cultural_preferences,
-                    'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
-                }
-                
-                meal_plan_data = self.sonar.generate_meal_plan(user_profile)
-                
-                MealPlan.objects.create(
+            # Build user profile
+            user_profile = {
+                'trimester': user.trimester,
+                'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
+                'allergies': user.allergies,
+                'cultural_preferences': user.cultural_preferences,
+                'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
+            }
+            
+            # Generate a new meal plan
+            logger.info("Generating new meal plan via Sonar API...")
+            max_retries = 3
+            retry_delay = 2  # seconds
+            meal_plan_data = None
+            
+            for attempt in range(max_retries):
+                try:
+                    meal_plan_data = self.sonar.generate_meal_plan(user_profile)
+                    
+                    # Validate the meal plan data
+                    if not meal_plan_data or not isinstance(meal_plan_data, dict):
+                        logger.error("Invalid meal plan data returned from Sonar")
+                        raise Exception("Invalid meal plan data")
+                    
+                    if 'error' in meal_plan_data:
+                        logger.error(f"Sonar API returned error: {meal_plan_data['error']}")
+                        raise Exception(f"Sonar API error: {meal_plan_data['error']}")
+                    
+                    # Check if we have valid days data
+                    days_data = meal_plan_data.get('days', [])
+                    if not days_data or len(days_data) == 0:
+                        logger.error("Meal plan data contains no days")
+                        raise Exception("No days in meal plan")
+                    
+                    # Additional validation for days structure
+                    valid_days = []
+                    for i, day_data in enumerate(days_data):
+                        if not isinstance(day_data, dict):
+                            logger.warning(f"Day {i+1} is not a valid dictionary, skipping")
+                            continue
+                        
+                        if 'day' not in day_data or 'meals' not in day_data:
+                            logger.warning(f"Day {i+1} missing required keys, skipping")
+                            continue
+                        
+                        meals = day_data.get('meals', {})
+                        if not isinstance(meals, dict) or len(meals) == 0:
+                            logger.warning(f"Day {i+1} has no valid meals, skipping")
+                            continue
+                        
+                        valid_days.append(day_data)
+                    
+                    if len(valid_days) == 0:
+                        logger.error("No valid days found in meal plan data")
+                        raise Exception("No valid days in meal plan")
+                    
+                    # Update the meal plan data with only valid days
+                    meal_plan_data['days'] = valid_days
+                    
+                    logger.info(f"Valid meal plan generated with {len(valid_days)} days")
+                    break  # Exit retry loop on success
+                    
+                except Exception as sonar_error:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Sonar API attempt {attempt + 1} failed: {str(sonar_error)}, retrying after {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error(f"Sonar API call failed after {max_retries} attempts: {str(sonar_error)}")
+                        import traceback
+                        logger.error(f"Sonar API traceback: {traceback.format_exc()}")
+                        # Send error message to user if not scheduled
+                        if not is_scheduled:
+                            error_message = "Sorry, I couldn't generate your meal plan right now. Please try again later."
+                            try:
+                                from .whatsapp import WhatsAppHandler
+                                whatsapp_handler = WhatsAppHandler()
+                                whatsapp_handler.send_message(user.phone_number, error_message)
+                            except Exception as error_send_error:
+                                logger.warning(f"Failed to send error message: {str(error_send_error)}")
+                        return "Sorry, I couldn't generate your meal plan right now. Please try again later."
+            
+            # If we get here without meal_plan_data, something went wrong
+            if not meal_plan_data:
+                error_msg = "Failed to generate meal plan after all retries"
+                logger.error(error_msg)
+                if not is_scheduled:
+                    try:
+                        from .whatsapp import WhatsAppHandler
+                        whatsapp_handler = WhatsAppHandler()
+                        whatsapp_handler.send_message(user.phone_number, "Sorry, I couldn't generate your meal plan right now. Please try again later.")
+                    except Exception as error_send_error:
+                        logger.warning(f"Failed to send error message: {str(error_send_error)}")
+                return "Sorry, I couldn't generate your meal plan right now. Please try again later."
+            
+            # Save the new meal plan to database, overwriting any existing one
+            try:
+                # Delete any existing meal plan for this user and week to avoid duplicate key error
+                MealPlan.objects.filter(user=user, week_number=week_number).delete()
+                new_plan = MealPlan.objects.create(
                     user=user,
                     week_number=week_number,
                     meal_plan_data=meal_plan_data
                 )
+                logger.info(f"New meal plan saved to database with ID: {new_plan.id}")
+            except Exception as db_error:
+                logger.error(f"Failed to save meal plan to database: {str(db_error)}")
+                # Continue anyway, we still have the meal_plan_data to show the user
             
+            # Update user state
             user.conversation_state = "AWAITING_MEAL_PLAN_DAY"
             user.save()
             
-            # Get current day and generate day names starting from today
-            today = datetime.now()
-            day_names = []
+            # Extract day names from valid days
+            valid_days = meal_plan_data.get('days', [])
+            days = []
+            for day_data in valid_days:
+                day_name = day_data.get('day', f'Day {len(days)+1}')
+                days.append(day_name)
             
-            # Get the meal plan days from the data structure
-            meal_plan_days = meal_plan_data.get('meal_plan', [])
+            days_text = " | ".join(days)
             
-            for i, day_data in enumerate(meal_plan_days):
-                current_date = today + timedelta(days=i)
-                day_name = current_date.strftime('%A')  # Full day name like 'Monday', 'Tuesday'
-                day_names.append(day_name)
-            
-            days_text = " | ".join(day_names)
-            
+            # Build response
             prefix = "Here's your scheduled " if is_scheduled else "Here's your "
-            return (
+            response = (
                 f"{prefix}Week {week_number} Meal Plan 🍽️ (type a day to view details):\n\n"
                 f"🗓️ {days_text}"
             )
-
+            
+            # Send the meal plan to user if not scheduled (for scheduled, it's handled elsewhere)
+            if not is_scheduled:
+                try:
+                    from .whatsapp import WhatsAppHandler
+                    whatsapp_handler = WhatsAppHandler()
+                    whatsapp_handler.send_message(user.phone_number, response)
+                    logger.info(f"Sent meal plan to user {user.id}")
+                except Exception as send_error:
+                    logger.warning(f"Failed to send meal plan message: {str(send_error)}")
+            
+            logger.info(f"Meal plan response generated successfully with {len(days)} days")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in meal plan generation: {str(e)}")
+            import traceback
+            logger.error(f"Unexpected error traceback: {traceback.format_exc()}")
+            
+            # Send error message to user if not scheduled
+            if not is_scheduled:
+                error_message = "Sorry, I couldn't generate your meal plan right now. Please try again later."
+                try:
+                    from .whatsapp import WhatsAppHandler
+                    whatsapp_handler = WhatsAppHandler()
+                    whatsapp_handler.send_message(user.phone_number, error_message)
+                except Exception as error_send_error:
+                    logger.warning(f"Failed to send error message: {str(error_send_error)}")
+            
+            return "Sorry, I couldn't generate your meal plan right now. Please try again later."
 
     def _handle_meal_plan_day_selection(self, user, message):
         """Handle day selection for a meal plan"""
@@ -408,51 +576,66 @@ class BotLogic:
         day_name = message.strip().capitalize()
         meal_plan_data = meal_plan.meal_plan_data
         
-        # Get today's date to map day names to meal plan indices
-        today = datetime.now()
+        # Extract days data from the new structure
+        days_data = meal_plan_data.get('days', [])
+        
+        if not days_data:
+            logger.error("No days data found in meal plan")
+            return "Sorry, there was an issue with your meal plan. Please generate a new one."
+        
         selected_day_data = None
-        selected_day_index = None
         
-        # Map the requested day name to the corresponding meal plan day
-        meal_plan_days = meal_plan_data.get('meal_plan', [])
-        
-        for i, day_data in enumerate(meal_plan_days):
-            current_date = today + timedelta(days=i)
-            current_day_name = current_date.strftime('%A')
-            
-            if current_day_name.lower() == day_name.lower():
+        # Find the matching day by name
+        for day_data in days_data:
+            if day_data.get('day', '').lower() == day_name.lower():
                 selected_day_data = day_data
-                selected_day_index = i
                 break
         
+        # If exact match not found, try partial matching
         if not selected_day_data:
-            user.conversation_state = "COMPLETED_ONBOARDING"
-            user.save()
-            return self._handle_nutrition_question(user, message)
+            for day_data in days_data:
+                day_name_in_data = day_data.get('day', '').lower()
+                if day_name.lower() in day_name_in_data or day_name_in_data.startswith(day_name.lower()[:3]):
+                    selected_day_data = day_data
+                    break
+        
+        if not selected_day_data:
+            # List available days for user
+            available_days = [day_data.get('day', f'Day {i+1}') for i, day_data in enumerate(days_data)]
+            days_list = " | ".join(available_days)
+            return f"I couldn't find '{day_name}' in your meal plan. Available days:\n🗓️ {days_list}\n\nPlease type one of these day names."
         
         # Get the actual day name for display
-        display_date = today + timedelta(days=selected_day_index)
-        display_day_name = display_date.strftime('%A')
+        display_day_name = selected_day_data.get('day', day_name.capitalize())
         
-        # Extract meals from the selected day data - check if 'meals' key exists
-        meals_data = selected_day_data.get('meals', selected_day_data)
+        # Extract meals from the selected day data
+        meals_data = selected_day_data.get('meals', {})
+        
+        if not meals_data:
+            logger.error(f"No meals data found for day: {display_day_name}")
+            return f"Sorry, no meal data found for {display_day_name}. Please try generating a new meal plan."
+        
+        # Map meal types with consistent capitalization
+        meal_type_mapping = {
+            'breakfast': 'Breakfast',
+            'lunch': 'Lunch', 
+            'dinner': 'Dinner',
+            'snack 1': 'Snack 1',
+            'snack 2': 'Snack 2'
+        }
+        
         meals = {}
         
-        if 'breakfast' in meals_data:
-            meals['Breakfast'] = meals_data['breakfast']
-        if 'lunch' in meals_data:
-            meals['Lunch'] = meals_data['lunch']
-        if 'dinner' in meals_data:
-            meals['Dinner'] = meals_data['dinner']
-        
-        # Handle snacks
-        if 'snacks' in meals_data and meals_data['snacks']:
-            for i, snack in enumerate(meals_data['snacks'], 1):
-                meals[f'Snack {i}'] = snack
+        # Extract meals based on the new data structure
+        for meal_key, meal_data in meals_data.items():
+            # Normalize the meal key for mapping
+            normalized_key = meal_key.lower().strip()
+            mapped_key = meal_type_mapping.get(normalized_key, meal_key.title())
+            meals[mapped_key] = meal_data
         
         meal_emojis = {
             "Breakfast": "🥣",
-            "Lunch": "🍛",
+            "Lunch": "🍛", 
             "Snack 1": "🍎",
             "Snack 2": "🍵",
             "Dinner": "🍲"
@@ -460,21 +643,47 @@ class BotLogic:
         
         message_parts = [f"🗓️ {display_day_name}"]
         
-        # Build meals section with truncation if needed
-        for meal_type, details in meals.items():
-            emoji = meal_emojis.get(meal_type, "🍽️")
-            name = details.get('name', 'Not specified')
-            description = details.get('description', '')
-            
-            meal_text = f"{emoji} {meal_type}: {name}"
-            if description:
-                # Truncate description if too long
-                if len(description) > 80:
-                    description = description[:77] + "..."
-                meal_text += f"\n   {description}"
-                
-            message_parts.append(meal_text)
+        # Define meal order for consistent display
+        meal_order = ["Breakfast", "Snack 1", "Lunch", "Snack 2", "Dinner"]
         
+        # Build meals section with proper ordering
+        for meal_type in meal_order:
+            if meal_type in meals:
+                details = meals[meal_type]
+                emoji = meal_emojis.get(meal_type, "🍽️")
+                name = details.get('name', 'Not specified')
+                description = details.get('description', '')
+                nutritional_benefits = details.get('nutritional_benefits', '')
+                
+                meal_text = f"{emoji} {meal_type}: {name}"
+                if description:
+                    # Truncate description if too long
+                    if len(description) > 80:
+                        description = description[:77] + "..."
+                    meal_text += f"\n   {description}"
+                
+                # Add nutritional benefits if available and space permits
+                if nutritional_benefits and len(nutritional_benefits) < 60:
+                    meal_text += f"\n   ✨ {nutritional_benefits}"
+                    
+                message_parts.append(meal_text)
+        
+        # Add any remaining meals not in the standard order
+        for meal_type, details in meals.items():
+            if meal_type not in meal_order:
+                emoji = meal_emojis.get(meal_type, "🍽️")
+                name = details.get('name', 'Not specified')
+                description = details.get('description', '')
+                
+                meal_text = f"{emoji} {meal_type}: {name}"
+                if description:
+                    if len(description) > 80:
+                        description = description[:77] + "..."
+                    meal_text += f"\n   {description}"
+                    
+                message_parts.append(meal_text)
+        
+        # Generate tip using user profile
         user_profile = {
             'trimester': user.trimester,
             'dietary_preferences': user.get_dietary_preferences_list() + ([user.other_dietary_preferences] if user.other_dietary_preferences else []),
@@ -483,9 +692,13 @@ class BotLogic:
             'pregnancy_conditions': user.get_pregnancy_conditions_list() + ([user.other_conditions] if user.other_conditions else []),
         }
         
-        # Generate tip and clean it
-        tip_response = self.sonar.generate_meal_plan_tip(user_profile, selected_day_data)
-        tip_content = self._clean_tip_content(tip_response.get('content', 'Stay hydrated for optimal nutrient absorption.'))
+        try:
+            # Generate tip and clean it
+            tip_response = self.sonar.generate_meal_plan_tip(user_profile, selected_day_data)
+            tip_content = self._clean_tip_content(tip_response.get('content', 'Stay hydrated and eat regularly for optimal nutrient absorption.'))
+        except Exception as e:
+            logger.warning(f"Failed to generate tip: {str(e)}")
+            tip_content = "Stay hydrated and eat regularly for optimal nutrient absorption."
         
         message_parts.append(f"🧠 Tip: {tip_content}")
         
@@ -499,25 +712,32 @@ class BotLogic:
         
         # If message is too long, truncate descriptions further
         if len(full_message) > 1500:  # Leave buffer for WhatsApp
+            logger.info(f"Message too long ({len(full_message)} chars), truncating...")
             # Rebuild with shorter descriptions
             message_parts = [f"🗓️ {display_day_name}"]
             
-            for meal_type, details in meals.items():
-                emoji = meal_emojis.get(meal_type, "🍽️")
-                name = details.get('name', 'Not specified')
-                
-                # Just show meal name without description for brevity
-                meal_text = f"{emoji} {meal_type}: {name}"
-                message_parts.append(meal_text)
+            for meal_type in meal_order:
+                if meal_type in meals:
+                    details = meals[meal_type]
+                    emoji = meal_emojis.get(meal_type, "🍽️")
+                    name = details.get('name', 'Not specified')
+                    
+                    # Just show meal name without description for brevity
+                    meal_text = f"{emoji} {meal_type}: {name}"
+                    message_parts.append(meal_text)
             
             message_parts.append(f"🧠 Tip: {tip_content}")
             full_message = "\n\n".join(message_parts) + footer
+            logger.info(f"Truncated message length: {len(full_message)} chars")
         
         return full_message
 
     def _clean_tip_content(self, tip_content):
         """Clean tip content to remove any XML tags or debug info"""
         import re
+        
+        if not tip_content:
+            return "Stay hydrated and eat regularly for optimal nutrient absorption."
         
         # Remove any XML-like tags (including <think> tags)
         tip_content = re.sub(r'<[^>]+>', '', tip_content)
@@ -538,8 +758,9 @@ class BotLogic:
         if tip_content and not tip_content.endswith(('.', '!', '?')):
             tip_content += '.'
         
-        return tip_content
-           
+        return tip_content 
+    
+
     def _format_meal_plan_for_sharing(self, meal_plan, day_name=None):
         """Format a meal plan or specific day for sharing"""
         meal_plan_data = meal_plan.meal_plan_data

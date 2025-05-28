@@ -3,6 +3,21 @@ import os
 import json
 import requests
 from django.conf import settings
+import logging
+import re
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Set up logging with UTF-8 encoding
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('meal_plan_debug.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 
 class SonarAPI:
     """Wrapper for the Perplexity Sonar API"""
@@ -12,6 +27,7 @@ class SonarAPI:
     def __init__(self):
         self.api_key = settings.PERPLEXITY_API_KEY
         if not self.api_key:
+            logger.error("Perplexity API key not found in environment variables")
             raise ValueError("Perplexity API key not found in environment variables")
 
     def _get_headers(self):
@@ -22,136 +38,293 @@ class SonarAPI:
             "Accept": "application/json"
         }
 
-    def query(self, prompt, model="sonar-reasoning-pro", context=None, stream=False, follow_up=False):
+    def query(self, prompt, model="sonar-reasoning-pro", context=None, stream=False, follow_up=False, retries=3):
         """
-        Make a query to the Sonar API
+        Make a query to the Sonar API with retry logic
         
         Args:
             prompt (str): The prompt to send to the API
-            model (str): The model to use (sonar-reasoning-pro, sonar-reasoning, sonar-deep-research)
-            context (dict, optional): Context information for the conversation
+            model (str): The model to use
+            context (dict, optional): Context information
             stream (bool, optional): Whether to stream the response
             follow_up (bool, optional): Whether this is a follow-up question
+            retries (int): Number of retry attempts
             
         Returns:
             dict: The API response
         """
-        # Format messages in the expected structure
-        messages = [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
+        logger.debug(f"Querying Sonar API with model={model}, stream={stream}, follow_up={follow_up}")
+        messages = [{"role": "user", "content": prompt}]
         
-        # Add system message with context if provided
         if context:
-            messages.insert(0, {
-                "role": "system",
-                "content": json.dumps(context)
-            })
+            messages.insert(0, {"role": "system", "content": json.dumps(context)})
         
-        payload = {
-            "model": model,
-            "messages": messages,
-            "stream": stream
-        }
+        payload = {"model": model, "messages": messages, "stream": stream}
         
+        session = requests.Session()
+        retry = Retry(total=retries, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+        session.mount('https://', HTTPAdapter(max_retries=retry))
+        
+        for attempt in range(retries + 1):
+            try:
+                logger.debug(f"Sending API request (attempt {attempt + 1}): {json.dumps(payload, indent=2)}")
+                response = session.post(
+                    self.BASE_URL, 
+                    headers=self._get_headers(), 
+                    json=payload
+                )
+                response.raise_for_status()
+                api_response = response.json()
+                logger.debug(f"API response: {json.dumps(api_response, indent=2)}")
+                return api_response
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API request failed (attempt {attempt + 1}): {str(e)}")
+                if attempt < retries:
+                    logger.info(f"Retrying API call ({attempt + 1}/{retries})")
+                    continue
+                return {"error": f"API request failed after {retries} attempts: {str(e)}"}
+
+    def extract_json_from_response(self, content):
+        """
+        Extract JSON content from Sonar API response that may contain <think> tags
+        """
         try:
-            response = requests.post(
-                self.BASE_URL, 
-                headers=self._get_headers(), 
-                json=payload
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"Error making API request: {e}")
-            return {"error": str(e)}
+            # First, try to parse as direct JSON
+            return json.loads(content)
+        except json.JSONDecodeError:
+            # If that fails, look for JSON within the content
+            
+            # Method 1: Look for content between ```json and ``` markers
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', content, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group(1))
+                except json.JSONDecodeError:
+                    pass
+            
+            # Method 2: Extract everything after </think> tag if present
+            think_end = content.find('</think>')
+            if think_end != -1:
+                remaining_content = content[think_end + 8:].strip()
+                # Look for JSON in the remaining content
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', remaining_content, re.DOTALL)
+                if json_match:
+                    try:
+                        return json.loads(json_match.group(1))
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Also try to parse the remaining content directly as JSON
+                try:
+                    return json.loads(remaining_content)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Method 3: Look for the largest JSON object in the content
+            # Find all potential JSON objects (starting with { and ending with })
+            brace_count = 0
+            start_pos = -1
+            
+            for i, char in enumerate(content):
+                if char == '{':
+                    if start_pos == -1:
+                        start_pos = i
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0 and start_pos != -1:
+                        # Found a complete JSON object
+                        json_str = content[start_pos:i+1]
+                        try:
+                            parsed = json.loads(json_str)
+                            if isinstance(parsed, dict) and 'meal_plan' in parsed:
+                                return parsed
+                        except json.JSONDecodeError:
+                            continue
+                        finally:
+                            start_pos = -1
+            
+            # If all methods fail, raise an error
+            raise ValueError("No valid JSON found in response")
 
     def generate_meal_plan(self, user_profile):
+        """Generate a meal plan based on user profile with enhanced debugging"""
+        logger.info("=== SONAR MEAL PLAN GENERATION STARTED ===")
+        logger.info(f"Input user_profile: {user_profile}")
+        
+        try:
+            trimester = user_profile.get('trimester', 1)
+            dietary_prefs = user_profile.get('dietary_preferences', [])
+            allergies = user_profile.get('allergies', '')
+            cultural_prefs = user_profile.get('cultural_preferences', '')
+            conditions = user_profile.get('pregnancy_conditions', [])
+            
+            logger.info(f"Parsed profile - Trimester: {trimester}, Dietary: {dietary_prefs}, Cultural: {cultural_prefs}")
+            
+            # Updated prompt to explicitly request JSON-only response
+            prompt = f"""
+            Generate a detailed 7-day meal plan for a pregnant woman with the following profile:
+            - Trimester: {trimester}
+            - Dietary Preferences: {', '.join(dietary_prefs)}
+            - Allergies/Intolerances: {allergies}
+            - Cultural Food Preferences: {cultural_prefs}
+            - Pregnancy Conditions: {', '.join(conditions)}
+            
+            IMPORTANT: Return ONLY valid JSON in this exact format with no additional text, explanations, or thinking tags:
+            
+            {{
+              "days": [
+                {{
+                  "day": "Monday",
+                  "meals": {{
+                    "Breakfast": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
+                    "Lunch": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
+                    "Snack 1": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
+                    "Snack 2": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}},
+                    "Dinner": {{"name": "dish name", "description": "description", "nutritional_benefits": "benefits"}}
+                  }}
+                }}
+              ]
+            }}
+            
+            Include all 7 days (Monday through Sunday) with proper nutritional benefits for pregnancy.
+            """
+            
+            context = {
+                "instructions": "You must respond with ONLY valid JSON. Do not include any thinking process, explanations, or additional text. Return only the JSON structure requested."
+            }
+            
+            logger.info("Calling Sonar API...")
+            response = self.query(prompt, model="sonar-reasoning-pro", context=context)
+            logger.info(f"Sonar API response type: {type(response)}")
+            logger.info(f"Sonar API response keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
+            
+            # Enhanced response processing with JSON extraction
+            try:
+                if 'choices' in response and len(response['choices']) > 0:
+                    content = response['choices'][0]['message']['content']
+                    logger.info(f"Raw API content length: {len(content)}")
+                    logger.info(f"Raw API content preview: {content[:300]}...")
+                    
+                    # Extract JSON from the response
+                    try:
+                        meal_plan_data = self.extract_json_from_response(content)
+                        logger.info("Successfully extracted JSON from response")
+                        
+                        # Validate the structure
+                        if not isinstance(meal_plan_data, dict):
+                            raise ValueError("Response is not a valid dictionary")
+                        
+                        # Handle different JSON structures
+                        if 'meal_plan' in meal_plan_data:
+                            # If the response has nested meal_plan structure, extract days
+                            nested_data = meal_plan_data['meal_plan']
+                            if isinstance(nested_data, dict):
+                                # Convert day_1, day_2, etc. format to days array
+                                days_array = []
+                                day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+                                for i in range(1, 8):
+                                    day_key = f"day_{i}"
+                                    if day_key in nested_data:
+                                        day_data = {
+                                            "day": day_names[i-1],
+                                            "meals": nested_data[day_key]
+                                        }
+                                        days_array.append(day_data)
+                                
+                                if days_array:
+                                    meal_plan_data = {"days": days_array}
+                                    logger.info(f"Converted nested structure to days array with {len(days_array)} days")
+                            elif isinstance(nested_data, list):
+                                meal_plan_data = {"days": nested_data}
+                        
+                        # Validate final structure
+                        if 'days' not in meal_plan_data:
+                            logger.error("No 'days' key found in meal plan data")
+                            return {"error": "Invalid meal plan structure - missing days"}
+                        
+                        days_data = meal_plan_data['days']
+                        if not isinstance(days_data, list) or len(days_data) == 0:
+                            logger.error("Days data is not a valid list or is empty")
+                            return {"error": "Invalid meal plan structure - invalid days data"}
+                        
+                        logger.info(f"Successfully validated meal plan with {len(days_data)} days")
+                        return meal_plan_data
+                        
+                    except ValueError as json_error:
+                        logger.error(f"JSON extraction failed: {str(json_error)}")
+                        # Fallback to text parsing
+                        logger.info("Attempting fallback text parsing...")
+                        fallback_result = self._format_text_response_to_json(content)
+                        if fallback_result and fallback_result.get('days'):
+                            logger.info("Fallback text parsing successful")
+                            return fallback_result
+                        else:
+                            logger.error("Fallback text parsing also failed")
+                            return {"error": f"Failed to extract JSON: {str(json_error)}"}
+                    
+                else:
+                    logger.error(f"Invalid API response structure: {response}")
+                    return {"error": "Invalid response format from API"}
+                    
+            except Exception as parse_error:
+                logger.error(f"Failed to parse meal plan: {str(parse_error)}")
+                logger.error(f"Parse error type: {type(parse_error)}")
+                import traceback
+                logger.error(f"Parse traceback: {traceback.format_exc()}")
+                return {"error": f"Failed to parse meal plan: {str(parse_error)}"}
+                
+        except Exception as e:
+            logger.error(f"=== SONAR MEAL PLAN GENERATION FAILED ===")
+            logger.error(f"Sonar generation error: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            return {"error": f"Sonar generation failed: {str(e)}"}
+
+    def _recover_partial_json(self, content):
         """
-        Generate a meal plan based on user profile
+        Attempt to recover a partial JSON meal plan from a malformed string
         
         Args:
-            user_profile (dict): User preferences and health information
+            content (str): The malformed JSON string
             
         Returns:
-            dict: A structured meal plan
+            dict: A partial meal plan if recoverable, else None
         """
-        # Create a detailed prompt for the meal plan generation
-        trimester = user_profile.get('trimester', 1)
-        dietary_prefs = user_profile.get('dietary_preferences', [])
-        allergies = user_profile.get('allergies', '')
-        cultural_prefs = user_profile.get('cultural_preferences', '')
-        conditions = user_profile.get('pregnancy_conditions', [])
-        
-        prompt = f"""
-        Generate a detailed 7-day meal plan for a pregnant woman with the following profile:
-        - Trimester: {trimester}
-        - Dietary Preferences: {', '.join(dietary_prefs)}
-        - Allergies/Intolerances: {allergies}
-        - Cultural Food Preferences: {cultural_prefs}
-        - Pregnancy Conditions: {', '.join(conditions)}
-        
-        For each day, include:
-        1. Breakfast
-        2. Lunch
-        3. Two snacks
-        4. Dinner
-        
-        For each meal:
-        - Include the name of the dish
-        - A brief description or key ingredients
-        - Note any nutritional benefits relevant to pregnancy
-        - Tailor to the specified dietary needs and cultural preferences
-        
-        Format the response as a JSON structure that can be easily parsed.
-        """
-        
-        # Add a system message to control format
-        context = {
-            "instructions": "Respond with a valid JSON structure containing a meal plan. Your response should be parseable JSON only."
-        }
-        
-        response = self.query(prompt, model="sonar-reasoning-pro", context=context)
-        
-        # Extract the meal plan from the response
+        logger.debug("Attempting to recover partial JSON")
         try:
-            # Check if the response contains choices with content
-            if 'choices' in response and len(response['choices']) > 0:
-                content = response['choices'][0]['message']['content']
-                # Sometimes the API might return markdown code blocks with JSON
-                if '```json' in content:
-                    json_str = content.split('```json')[1].split('```')[0].strip()
-                    return json.loads(json_str)
-                # Or it might return raw JSON
-                try:
-                    return json.loads(content)
-                except json.JSONDecodeError:
-                    # If direct parsing fails, try to extract JSON using regex
-                    import re
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        return json.loads(json_match.group(0))
-                    else:
-                        # If all parsing fails, create a structured format ourselves
-                        return self._format_text_response_to_json(content)
-            else:
-                return {"error": "Invalid response format from API"}
+            # Find the last valid day entry
+            last_valid_pos = content.rfind('},')  # Look for end of a day object
+            if last_valid_pos == -1:
+                return None
+                
+            # Truncate to the last valid day
+            partial_content = content[:last_valid_pos + 1] + ']}'
+            # Wrap in the days structure
+            if not partial_content.startswith('{"days":'):
+                partial_content = '{"days": [' + partial_content.lstrip('{').lstrip('[')
+            
+            parsed_json = json.loads(partial_content)
+            
+            if parsed_json.get('days') and isinstance(parsed_json['days'], list):
+                logger.info(f"Recovered {len(parsed_json['days'])} days from partial JSON")
+                return parsed_json
+            return None
         except Exception as e:
-            return {"error": f"Failed to parse meal plan: {str(e)}"}
+            logger.error(f"Partial JSON recovery failed: {str(e)}")
+            return None
 
     def _format_text_response_to_json(self, text):
         """
         Convert a text response to a structured JSON format
         Used as a fallback when the API doesn't return valid JSON
         """
+        logger.debug(f"Formatting text response to JSON: {text[:200]}...")
         days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         meal_types = ["Breakfast", "Lunch", "Snack 1", "Snack 2", "Dinner"]
         
         meal_plan = {"days": []}
-        
         current_day = None
         current_meals = {}
         
@@ -161,57 +334,54 @@ class SonarAPI:
             if not line:
                 continue
                 
-            # Check if this is a day header
             day_match = any(day.lower() in line.lower() for day in days)
             if day_match:
-                # Save the previous day if it exists
                 if current_day and current_meals:
                     meal_plan["days"].append({
                         "day": current_day,
                         "meals": current_meals
                     })
+                    logger.debug(f"Added day to meal plan: {current_day}")
                 
-                # Start a new day
                 for day in days:
                     if day.lower() in line.lower():
                         current_day = day
                         current_meals = {}
+                        logger.debug(f"Starting new day: {current_day}")
                         break
                 continue
             
-            # Check if this is a meal type
             meal_match = None
             for meal in meal_types:
                 if meal.lower() in line.lower() or (meal == "Snack 1" and "snack" in line.lower()):
                     meal_match = meal
-                    # Extract content after the meal type
                     content = line.split(":", 1)[1].strip() if ":" in line else ""
                     if not content:
-                        # If no content on this line, look at next lines
                         continue
                     
                     current_meals[meal_match] = {
                         "name": content,
-                        "description": ""
+                        "description": "",
+                        "nutritional_benefits": ""
                     }
+                    logger.debug(f"Added meal: {meal_match} - {content}")
                     break
             
-            # If not a day or meal type, it's probably a description
             if meal_match is None and current_day and current_meals:
-                # Add to the last meal's description
                 last_meal = list(current_meals.keys())[-1] if current_meals else None
                 if last_meal:
                     if "description" in current_meals[last_meal]:
                         current_meals[last_meal]["description"] += " " + line
                     else:
                         current_meals[last_meal]["description"] = line
+                    logger.debug(f"Appended description to {last_meal}: {line}")
         
-        # Don't forget to add the last day
         if current_day and current_meals:
             meal_plan["days"].append({
                 "day": current_day,
                 "meals": current_meals
             })
+            logger.debug(f"Final day added: {current_day}")
         
         return meal_plan
 
