@@ -56,6 +56,6 @@ nosetests.xml
 pytest_cache/
 
 # Migrations (optional: keep if needed for deployment)
-**/migrations/*.pyc
-**/migrations/*.pyo
-**/migrations/__pycache__/
+/migrations/*.pyc
+/migrations/*.pyo
+/migrations/__pycache__/
