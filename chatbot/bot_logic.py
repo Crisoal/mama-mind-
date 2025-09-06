@@ -1,4 +1,3 @@
-# chatbot/bot_logic.py
 import json
 import random
 import os
