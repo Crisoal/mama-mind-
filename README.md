@@ -16,9 +16,6 @@ MamáMind is a WhatsApp-based chatbot designed to support pregnant women with pe
 - **Cultural Sensitivity**: Incorporates culturally relevant dishes (e.g., Fijian, Indian) based on user preferences.
 - **Twilio Integration**: Ensures messages stay within the 1600-character limit for reliable WhatsApp delivery.
 
-### Partially Implemented Features
-- **Daily Tips & Nudges**: Basic tip generation is included (e.g., "Iron prevents pregnancy anemia - ACOG"), but automated daily scheduling and behavioral nudges (e.g., reminders for iron-rich meals) are not fully implemented due to time constraints.
-- **Share Meal Plan**: A prompt to share the meal plan is included, but the functionality to generate a forward-friendly text or PDF for sharing with partners or caregivers is not complete.
 
 ## User Flow
 MamáMind operates as a conversational WhatsApp chatbot with a structured flow:
@@ -134,8 +131,6 @@ MamáMind operates as a conversational WhatsApp chatbot with a structured flow:
 
 
 ### Limitations
-- **Daily Tips & Nudges**: Only basic tips are included in meal plan responses. Automated scheduling (e.g., 8:00 AM tips) and nudges require a task scheduler (e.g., Celery) and were not implemented due to time constraints.
-- **Share Plan**: The sharing prompt exists, but generating a shareable text or PDF is not implemented, requiring additional logic for formatting and delivery.
 - **Text Input**: User input is text-based (e.g., "Vegetarian" instead of radio buttons), which may lead to parsing errors for unexpected inputs. Input validation could be improved.
 - **Scalability**: Current implementation assumes a single user interaction at a time. High user volumes may require queuing or async processing.
 - **Error Handling**: While robust, some edge cases (e.g., malformed Sonar API responses) may need additional handling.
