@@ -1,4 +1,3 @@
-# chatbot/whatsapp.py
 import json
 import logging
 from django.conf import settings
